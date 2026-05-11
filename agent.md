@@ -109,7 +109,7 @@ $(eval $(call BuildPackage,waverms-agent))
 - `+luasocket` provides TCP/TLS for the MQTT connection
 - `+luci-lib-uci` provides native UCI bindings (no subprocess needed)
 - `+luci-lib-jsonc` provides fast C-backed JSON parsing
-- `+mosquitto-client` provides `mosquitto_pub` / `mosquitto_sub` as fallback
+- `+mosquitto-client` provides `mosquitto_pub` / `mosquitto_sub` used by `mqtt.lua`
 - `conffiles` marks `/etc/waverms/config` as preserved on `opkg upgrade`
 
 ---
@@ -125,7 +125,7 @@ $(eval $(call BuildPackage,waverms-agent))
 │                                    option agent_version '1.0.0'
 ├── bootstrap_token               ← one-time token (from files/ overlay,
 │                                    deleted after successful bootstrap)
-└── credentials                   ← device_id + secret (chmod 600,
+└── credentials                   ← KEY=VALUE pairs (chmod 600,
                                      created at runtime by bootstrap.lua)
 /usr/share/waverms/
 ├── agent.lua
@@ -137,6 +137,22 @@ $(eval $(call BuildPackage,waverms-agent))
     └── utils.lua
 ```
 
+### Credentials file format
+
+`bootstrap.lua` writes `/etc/waverms/credentials` as newline-separated
+`KEY=VALUE` pairs (chmod 600):
+
+```
+DEVICE_ID=550e8400-e29b-41d4-a716-446655440000
+SECRET=a3f8c2e1d4b7...
+BROKER_HOST=waverms-broker.example.com
+BROKER_PORT=8883
+```
+
+`BROKER_HOST` and `BROKER_PORT` are only written when the server includes them
+in the bootstrap response. `agent.lua` reads this file and overrides the
+UCI-derived config values if they are present.
+
 ---
 
 ## Configuration (UCI)
@@ -147,20 +163,20 @@ Config is stored in UCI format at `/etc/waverms/config`:
 config waverms 'waverms'
     option broker_host  'waverms-broker.local'
     option broker_port  '8883'
+    option ca_cert      '/etc/waverms/ca.crt'
     option agent_version '1.0.0'
     option heartbeat_interval '60'
     option reconnect_max_delay '300'
 ```
 
-Read in Lua via `luci-lib-uci`:
+`config.lua` exposes two public functions:
 
-```lua
-local uci = require "uci"
-local c   = uci.cursor()
-
-local broker_host = c:get("waverms", "waverms", "broker_host")
-local broker_port = tonumber(c:get("waverms", "waverms", "broker_port"))
-```
+- `M.load()` – reads all known keys from UCI, falling back to built-in
+  defaults for any key that is absent. Returns a plain Lua table.
+- `M.get_broker(cfg)` – returns the broker host from the already-loaded `cfg`
+  table; falls back to a DNS lookup of `waverms-broker.local`, then to a raw
+  parse of `/etc/waverms/config`.
+- `M.set_broker(host)` – writes the broker host back to UCI and commits.
 
 ---
 
@@ -176,7 +192,7 @@ STOP=10
 start_service() {
     procd_open_instance
     procd_set_param command /usr/bin/lua /usr/share/waverms/agent.lua
-    procd_set_param respawn 3600 5 5   # threshold, timeout, retry
+    procd_set_param respawn 3600 5 0
     procd_set_param stdout 1
     procd_set_param stderr 1
     procd_close_instance
@@ -184,7 +200,8 @@ start_service() {
 ```
 
 `START=99` ensures the agent starts after all network services.
-`respawn` restarts the agent automatically if it crashes.
+`respawn 3600 5 0` means: restart immediately on crash (0 retries before giving
+up within the 3600 s window; 5 s minimum time between restarts).
 
 ---
 
@@ -197,68 +214,71 @@ START (procd, after network-up)
 │
 ├─ NO → bootstrap.lua:
 │   1. Read bootstrap_token from /etc/waverms/bootstrap_token
-│   2. Generate tmp_uuid (read /proc/sys/kernel/random/uuid)
-│   3. MQTT connect: user="bootstrap", pw=bootstrap_token, TLS
-│   4. SUBSCRIBE bootstrap/{tmp_uuid}/response
-│   5. PUBLISH bootstrap/register {tmp_uuid, token, hw_info}
-│   6. Wait for response (timeout 30s → retry with exponential backoff)
-│   7. Parse {device_id, secret, broker_host} from JSON response
-│   8. Write credentials to /etc/waverms/credentials (os.chmod 600)
-│   9. Update broker_host in UCI config
-│  10. Delete /etc/waverms/bootstrap_token (os.remove)
-│  11. DISCONNECT → fall through to normal operation
+│   2. Read tmp_uuid from /proc/sys/kernel/random/uuid
+│   3. MQTT configure: user="bootstrap", pw=bootstrap_token, TLS
+│   4. For each attempt (max 10, exponential backoff 1 s → 300 s):
+│      a. SUBSCRIBE bootstrap/{tmp_uuid}/response  (via mosquitto_sub -C 1)
+│      b. PUBLISH   bootstrap/register {tmp_uuid, token, hw_info}
+│      c. Wait for response (timeout 30 s)
+│   5. Parse {device_id, secret, broker_host, broker_port} from JSON response
+│   6. Write KEY=VALUE credentials to /etc/waverms/credentials (chmod 600)
+│   7. Update broker_host in UCI config via config.set_broker()
+│   8. Delete /etc/waverms/bootstrap_token (os.remove)
+│   → return true; agent.lua reloads config and continues to normal operation
 │
 └─ YES → agent.lua (normal operation):
-    1. Read device_id + secret from /etc/waverms/credentials
-    2. Resolve broker via config.lua (see Broker Discovery below)
-    3. MQTT connect: user=device_id, pw=secret, TLS
+    1. Read DEVICE_ID, SECRET (and optionally BROKER_HOST, BROKER_PORT)
+       from /etc/waverms/credentials
+    2. Resolve broker via config.get_broker(cfg)
+    3. MQTT configure: user=DEVICE_ID, pw=SECRET, TLS
        – LWT: device/{id}/status = "offline" (retain=true, qos=1)
-    4. SUBSCRIBE device/{id}/cmd (qos=1)
-    5. PUBLISH device/{id}/info (registration heartbeat)
-    6. Event loop:
-       a. Timer every 60s     → heartbeat on device/{id}/info
-       b. Message on cmd topic → uci.lua executes commands
-                               → PUBLISH device/{id}/ack
-       c. Connection lost     → exponential backoff reconnect
-                                 (1s → 2s → 4s → ... → 300s max)
+    4. mqtt.subscribe_loop() – see "Subscribe Loop" below
+    5. On session end: exponential backoff reconnect (1 s → 2 s → … → 300 s max)
 ```
+
+### Subscribe Loop (mqtt.lua)
+
+`subscribe_loop` cannot use a native Lua MQTT library because `luasocket` has
+no MQTT support. Instead it drives `mosquitto_sub` / `mosquitto_pub` CLI tools
+via a FIFO:
+
+```
+mosquitto_sub (background)  ──writes──►  /tmp/waverms_fifo_<device_id>
+                                                   │
+heartbeat ticker (background shell loop) ──writes──► (sentinel byte \001)
+                                                   │
+agent.lua  ──fh:read("*l")─────────────────────────►
+    │
+    ├── line == "\001"  → on_heartbeat()   (PUBLISH device/{id}/info every 60 s)
+    ├── line == nil     → mosquitto_sub exited → return (triggers reconnect)
+    └── any other line  → on_message(line)  → handle_command() → PUBLISH ack
+```
+
+Sequence on entry to `subscribe_loop`:
+
+1. Create a named FIFO at `/tmp/waverms_fifo_<device_id>`.
+2. Launch a shell wrapper (via `sh -c … &`) that:
+   a. Starts `mosquitto_sub` with LWT options, writing to the FIFO.
+   b. Starts a ticker subshell that writes `\001\n` to the FIFO every
+      `heartbeat_interval` seconds (default 60).
+   c. `wait`s for `mosquitto_sub` to exit, then kills the ticker.
+3. Open the FIFO for reading in Lua (`io.open`).
+4. Call `on_connect()` (publishes `online` status + initial `device/{id}/info`).
+5. Enter read loop until `fh:read("*l")` returns `nil`.
+6. Close and remove the FIFO.
 
 ---
 
 ## Broker Discovery (priority order)
 
-```lua
--- lib/config.lua
-local M = {}
-local uci = require "uci"
+`config.get_broker(cfg)` resolves in this order:
 
-function M.get_broker()
-    local c = uci.cursor()
+1. `cfg.broker_host` – set from UCI or overridden from credentials file.
+2. DNS lookup of `waverms-broker.local` via `socket.dns.toip()`.
+3. Raw line-by-line parse of `/etc/waverms/config` looking for
+   `option broker_host '...'`.
 
-    -- 1. UCI config (set after first bootstrap, most reliable)
-    local host = c:get("waverms", "waverms", "broker_host")
-    if host and host ~= "" then return host end
-
-    -- 2. DNS lookup
-    local socket = require "socket"
-    local ip = socket.dns.toip("waverms-broker.local")
-    if ip then return ip end
-
-    -- 3. Fallback: read raw config file
-    local f = io.open("/etc/waverms/config", "r")
-    if f then
-        for line in f:lines() do
-            local h = line:match("option broker_host%s+'(.-)'")
-            if h then f:close(); return h end
-        end
-        f:close()
-    end
-
-    return nil
-end
-
-return M
-```
+Returns `nil` if all three fail; the caller exits with `os.exit(1)`.
 
 ---
 
@@ -302,6 +322,9 @@ return M
 }
 ```
 
+`broker_host` and `broker_port` are optional; the agent uses its UCI config
+values if they are absent.
+
 **`device/{id}/info`** (on connect + every 60s)
 ```json
 {
@@ -332,69 +355,53 @@ return M
 {
   "cmd_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "status": "ok",
-  "output": "",
+  "output": "uci set system.@system[0].hostname=router-01: ok\nuci commit system: ok",
   "timestamp": "2025-05-09T10:00:05Z"
 }
 ```
+
+`output` contains one `"<cmd>: ok"` line per successful command, or an error
+message for the first failing command. `status` is `"ok"` or `"error"`.
 
 ---
 
 ## UCI Command Execution (uci.lua)
 
+Supported operations: `set`, `commit`, `delete`, `add`.
+
 ```lua
--- lib/uci.lua
-local M   = {}
-local uci = require "uci"
-local log = require "waverms.lib.utils"
-
-function M.apply(commands)
-    local c      = uci.cursor()
-    local output = {}
-    local ok     = true
-
-    for _, cmd in ipairs(commands) do
-        -- parse "uci set pkg.section.option=value"
-        local op, args = cmd:match("^uci%s+(%S+)%s+(.*)")
-        if not op then
-            table.insert(output, "unparseable command: " .. cmd)
-            ok = false
-            break
-        end
-
-        local success, err = pcall(function()
-            if op == "set" then
-                local pkg, section, option, value =
-                    args:match("^(.-)%.(.-)%.(.-)=(.+)$")
-                c:set(pkg, section, option, value)
-
-            elseif op == "commit" then
-                c:commit(args)
-
-            elseif op == "delete" then
-                local pkg, section, option = args:match("^(.-)[%.](.-)[%.](.*)")
-                if option ~= "" then
-                    c:delete(pkg, section, option)
-                else
-                    c:delete(pkg, section)
-                end
-
-            else
-                error("unsupported UCI op: " .. op)
-            end
-        end)
-
-        if not success then
-            table.insert(output, tostring(err))
-            ok = false
-            break
-        end
-    end
-
-    return ok, table.concat(output, "\n")
-end
-
-return M
+-- lib/uci.lua (public API)
+M.apply(commands)  -- commands: list of strings like "uci set pkg.sec.opt=val"
+                   -- returns: ok (bool), output (string)
 ```
+
+Each command string is parsed into `op` + `args`. A `pcall` wraps the UCI
+cursor call so that one bad command aborts the batch and returns `"error"`.
+Every successful command appends `"<cmd>: ok"` to the output list.
+
+Supported command forms:
+
+| Command | Example |
+|---|---|
+| `uci set pkg.section.option=value` | `uci set system.@system[0].hostname=r1` |
+| `uci commit pkg` | `uci commit system` |
+| `uci delete pkg.section.option` | `uci delete network.wan.dns` |
+| `uci delete pkg.section` | `uci delete network.wan` |
+| `uci add pkg sectiontype` | `uci add firewall rule` |
+
+---
+
+## utils.lua – Public API
+
+| Function | Description |
+|---|---|
+| `utils.log(msg)` | Writes to syslog via `logger -t waverms` |
+| `utils.read_file(path)` | Returns file contents as string, or `nil` |
+| `utils.write_file(path, content, perms)` | Writes file; applies `chmod perms` if given |
+| `utils.file_exists(path)` | Returns `true` if the file can be opened |
+| `utils.timestamp()` | Returns UTC ISO-8601 string (`!%Y-%m-%dT%H:%M:%SZ`) |
+| `utils.trim(s)` | Strips leading and trailing whitespace |
+| `utils.random_id()` | Returns a numeric string based on `os.time()` + random suffix |
 
 ---
 
@@ -403,7 +410,7 @@ return M
 | File | Permissions | Contents | Lifecycle |
 |---|---|---|---|
 | `/etc/waverms/bootstrap_token` | 600 | one-time token (from files/ overlay) | deleted after bootstrap |
-| `/etc/waverms/credentials` | 600 | `device_id\nsecret` | created by bootstrap.lua, never deleted |
+| `/etc/waverms/credentials` | 600 | `KEY=VALUE` pairs: DEVICE_ID, SECRET, optionally BROKER_HOST, BROKER_PORT | created by bootstrap.lua, never deleted |
 | `/etc/waverms/config` | 644 | UCI config, broker host | preserved on opkg upgrade |
 
 - Credentials are never logged
@@ -457,4 +464,4 @@ Key differences from WaveRMS:
 
 ---
 
-*Version: 1.0 | May 2025*
+*Version: 1.1 | May 2026*
