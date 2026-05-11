@@ -4,7 +4,19 @@ PKG_NAME:=waverms-agent
 PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
+# No source tarball needed
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
+
 include $(INCLUDE_DIR)/package.mk
+
+# Skip the unpack step (no tarball)
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+endef
+
+# Nothing to compile
+define Build/Compile
+endef
 
 define Package/waverms-agent
   SECTION:=utils
