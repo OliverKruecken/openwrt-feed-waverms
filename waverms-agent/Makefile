@@ -10,23 +10,25 @@ define Package/waverms-agent
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=WaveRMS Remote Management Agent
-  DEPENDS:=+mosquitto-client +jsonfilter +libuci
+  DEPENDS:=+lua +luasocket +luci-lib-uci +luci-lib-jsonc +mosquitto-client
 endef
 
 define Package/waverms-agent/description
-  Device agent for the WaveRMS remote management platform.
-  Handles bootstrap registration, device info publishing,
-  and remote command execution via MQTT over TLS.
+  WaveRMS remote management agent for OpenWrt devices.
+  Connects to the WaveRMS server via MQTT and executes
+  configuration commands via UCI.
+endef
+
+define Package/waverms-agent/conffiles
+/etc/waverms/config
 endef
 
 define Package/waverms-agent/install
   $(INSTALL_DIR) $(1)/usr/share/waverms/lib
-  $(INSTALL_BIN) ./files/usr/share/waverms/agent.sh       $(1)/usr/share/waverms/
-  $(INSTALL_BIN) ./files/usr/share/waverms/lib/bootstrap.sh  $(1)/usr/share/waverms/lib/
-  $(INSTALL_BIN) ./files/usr/share/waverms/lib/mqtt.sh       $(1)/usr/share/waverms/lib/
-  $(INSTALL_BIN) ./files/usr/share/waverms/lib/uci_apply.sh  $(1)/usr/share/waverms/lib/
-  $(INSTALL_DIR) $(1)/etc/init.d
-  $(INSTALL_BIN) ./files/waverms-agent.init                $(1)/etc/init.d/waverms-agent
+  $(INSTALL_BIN)  ./files/usr/share/waverms/agent.lua        $(1)/usr/share/waverms/
+  $(INSTALL_DATA) ./files/usr/share/waverms/lib/*.lua        $(1)/usr/share/waverms/lib/
+  $(INSTALL_DIR)  $(1)/etc/init.d
+  $(INSTALL_BIN)  ./files/waverms-agent.init                  $(1)/etc/init.d/waverms-agent
 endef
 
 $(eval $(call BuildPackage,waverms-agent))
