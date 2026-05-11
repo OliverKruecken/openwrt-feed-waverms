@@ -10,7 +10,7 @@ define Package/waverms-agent
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=WaveRMS Remote Management Agent
-  DEPENDS:=+lua +luasocket +luci-lib-uci +luci-lib-jsonc +mosquitto-client
+  DEPENDS:=+lua +luasocket +libuci-lua +luci-lib-jsonc +mosquitto-client
 endef
 
 define Package/waverms-agent/description
