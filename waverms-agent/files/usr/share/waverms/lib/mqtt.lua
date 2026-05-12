@@ -5,7 +5,6 @@ local _cfg = {
     port     = 8883,
     username = nil,
     password = nil,
-    ca_cert  = nil,
 }
 
 local function sq(s)
@@ -17,15 +16,14 @@ local function base_opts()
         .. " -p " .. sq(_cfg.port)
         .. " -u " .. sq(_cfg.username)
         .. " -P " .. sq(_cfg.password)
-        .. " --cafile " .. sq(_cfg.ca_cert)
+        .. " --tls-use-os-certs"
 end
 
-function M.configure(host, port, username, password, ca_cert)
+function M.configure(host, port, username, password)
     _cfg.host     = host
     _cfg.port     = port
     _cfg.username = username
     _cfg.password = password
-    _cfg.ca_cert  = ca_cert
 end
 
 function M.publish(topic, payload, retain, qos)

@@ -4,7 +4,6 @@ local uci = require "uci"
 local DEFAULTS = {
     broker_host         = "waverms-broker.local",
     broker_port         = 8883,
-    ca_cert             = "/etc/waverms/ca.crt",
     heartbeat_interval  = 60,
     reconnect_max_delay = 300,
     agent_version       = "1.0.0",

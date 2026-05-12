@@ -26,7 +26,7 @@ function M.run(cfg)
         utils.log("no broker host configured")
         return false
     end
-    mqtt.configure(host, cfg.broker_port, "bootstrap", token, cfg.ca_cert)
+    mqtt.configure(host, cfg.broker_port, "bootstrap", token)
 
     local model = utils.trim(utils.read_file("/tmp/sysinfo/model") or "unknown")
     local openwrt_ver = "unknown"

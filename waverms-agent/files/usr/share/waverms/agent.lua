@@ -79,7 +79,7 @@ local function run_session(device_id, secret, cfg)
         utils.log("no broker host – cannot connect")
         return
     end
-    mqtt.configure(host, cfg.broker_port, device_id, secret, cfg.ca_cert)
+    mqtt.configure(host, cfg.broker_port, device_id, secret)
 
     mqtt.subscribe_loop(
         device_id,

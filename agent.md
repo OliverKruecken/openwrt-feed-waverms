@@ -163,7 +163,6 @@ Config is stored in UCI format at `/etc/waverms/config`:
 config waverms 'waverms'
     option broker_host  'waverms-broker.local'
     option broker_port  '8883'
-    option ca_cert      '/etc/waverms/ca.crt'
     option agent_version '1.0.0'
     option heartbeat_interval '60'
     option reconnect_max_delay '300'
