@@ -55,7 +55,7 @@ function M.subscribe_and_publish(response_topic, publish_topic, payload, timeout
         .. " -m " .. sq(payload) .. " -q 1 2>/dev/null; "
         .. "wait $SUB"
 
-    os.execute("sh -c " .. sq(wrapper))
+    os.execute(wrapper)
 
     local f = io.open(tmpfile, "r")
     local result = nil
@@ -97,7 +97,7 @@ function M.subscribe_loop(device_id, lwt_topic, lwt_payload, on_connect, on_mess
         "wait $BEAT_PID 2>/dev/null",
     }, "; ")
 
-    os.execute("sh -c " .. sq(wrapper) .. " &")
+    os.execute(wrapper .. " &")
 
     local fh = io.open(fifo, "r")
     if not fh then
