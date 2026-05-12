@@ -118,12 +118,12 @@ $(eval $(call BuildPackage,waverms-agent))
 
 ```
 /etc/init.d/waverms-agent         ← procd service (from feed, chmod +x)
+/etc/config/waverms               ← UCI config (from feed, standard UCI path)
+                                     option broker_host 'mosquitto.example.com'
+                                     option broker_port '8883'
+                                     option agent_version '1.0.0'
 /etc/waverms/
-├── config                        ← UCI config (from files/ overlay)
-│                                    option broker_host 'waverms-broker.local'
-│                                    option broker_port '8883'
-│                                    option agent_version '1.0.0'
-├── bootstrap_token               ← one-time token (from files/ overlay,
+├── bootstrap_token               ← one-time token (from build overlay,
 │                                    deleted after successful bootstrap)
 └── credentials                   ← KEY=VALUE pairs (chmod 600,
                                      created at runtime by bootstrap.lua)
@@ -157,11 +157,11 @@ UCI-derived config values if they are present.
 
 ## Configuration (UCI)
 
-Config is stored in UCI format at `/etc/waverms/config`:
+Config is stored in UCI format at `/etc/config/waverms` (standard UCI path):
 
 ```
 config waverms 'waverms'
-    option broker_host  'waverms-broker.local'
+    option broker_host  'mosquitto.example.com'
     option broker_port  '8883'
     option agent_version '1.0.0'
     option heartbeat_interval '60'
@@ -174,7 +174,7 @@ config waverms 'waverms'
   defaults for any key that is absent. Returns a plain Lua table.
 - `M.get_broker(cfg)` – returns the broker host from the already-loaded `cfg`
   table; falls back to a DNS lookup of `waverms-broker.local`, then to a raw
-  parse of `/etc/waverms/config`.
+  parse of `/etc/config/waverms`.
 - `M.set_broker(host)` – writes the broker host back to UCI and commits.
 
 ---
@@ -408,9 +408,9 @@ Supported command forms:
 
 | File | Permissions | Contents | Lifecycle |
 |---|---|---|---|
-| `/etc/waverms/bootstrap_token` | 600 | one-time token (from files/ overlay) | deleted after bootstrap |
+| `/etc/config/waverms` | 644 | UCI config, broker host | preserved on opkg upgrade |
+| `/etc/waverms/bootstrap_token` | 600 | one-time token (from build overlay) | deleted after bootstrap |
 | `/etc/waverms/credentials` | 600 | `KEY=VALUE` pairs: DEVICE_ID, SECRET, optionally BROKER_HOST, BROKER_PORT | created by bootstrap.lua, never deleted |
-| `/etc/waverms/config` | 644 | UCI config, broker host | preserved on opkg upgrade |
 
 - Credentials are never logged
 - Bootstrap token is deleted immediately after successful registration

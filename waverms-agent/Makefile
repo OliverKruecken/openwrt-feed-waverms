@@ -32,7 +32,7 @@ define Package/waverms-agent/description
 endef
 
 define Package/waverms-agent/conffiles
-/etc/waverms/config
+/etc/config/waverms
 endef
 
 define Package/waverms-agent/install
@@ -41,8 +41,9 @@ define Package/waverms-agent/install
 	$(INSTALL_DATA) ./files/usr/share/waverms/lib/*.lua        $(1)/usr/share/waverms/lib/
 	$(INSTALL_DIR)  $(1)/etc/init.d
 	$(INSTALL_BIN)  ./files/waverms-agent.init                 $(1)/etc/init.d/waverms-agent
+	$(INSTALL_DIR)  $(1)/etc/config
+	$(INSTALL_CONF) ./files/etc/config/waverms                 $(1)/etc/config/waverms
 	$(INSTALL_DIR)  $(1)/etc/waverms
-	$(INSTALL_CONF) ./files/etc/waverms/config                 $(1)/etc/waverms/config
 endef
 
 $(eval $(call BuildPackage,waverms-agent))

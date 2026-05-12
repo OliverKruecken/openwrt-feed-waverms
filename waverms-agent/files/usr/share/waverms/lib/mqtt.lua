@@ -55,6 +55,8 @@ function M.subscribe_and_publish(response_topic, publish_topic, payload, timeout
         .. " -m " .. sq(payload) .. " -q 1 2>/dev/null; "
         .. "wait $SUB"
 
+    local utils = require "waverms.lib.utils"
+    utils.log("DEBUG subscribe_and_publish cmd: " .. wrapper)
     os.execute(wrapper)
 
     local f = io.open(tmpfile, "r")

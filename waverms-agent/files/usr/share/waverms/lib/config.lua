@@ -32,7 +32,7 @@ function M.get_broker(cfg)
         local ip = socket.dns.toip("waverms-broker.local")
         if ip then return ip end
     end
-    local f = io.open("/etc/waverms/config", "r")
+    local f = io.open("/etc/config/waverms", "r")
     if f then
         for line in f:lines() do
             local h = line:match("option broker_host%s+'(.-)'")
