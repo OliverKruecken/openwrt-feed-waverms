@@ -12,7 +12,7 @@ GO_PKG:=github.com/OliverKruecken/waverms-agent
 GO_PKG_LDFLAGS_X:=main.Version=$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
-include $(GO_INCLUDE_DIR)/golang-package.mk
+$(call include_mk, golang-package.mk)
 
 define Package/waverms-agent-go-poc
   SECTION:=utils
@@ -20,3 +20,15 @@ define Package/waverms-agent-go-poc
   TITLE:=WaveRMS Agent Go PoC
   DEPENDS:=$(GO_ARCH_DEPENDS)
 endef
+
+define Package/waverms-agent-go-poc/description
+  Minimal Go binary to validate Go toolchain support
+  in the OpenWrt buildroot for the WaveRMS agent.
+endef
+
+define Package/waverms-agent-go-poc/install
+	$(call GoPackage/Package/Install/Bin,$(1))
+endef
+
+$(eval $(call GoPackage,waverms-agent-go-poc))
+$(eval $(call BuildPackage,waverms-agent-go-poc))
