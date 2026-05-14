@@ -4,46 +4,50 @@ PKG_NAME:=waverms-agent
 PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
-# No source tarball needed
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_BUILD_DEPENDS:=golang/host
+PKG_BUILD_PARALLEL:=1
+PKG_BUILD_FLAGS:=no-mips16
+
+GO_PKG:=github.com/OliverKruecken/waverms-agent
+GO_PKG_BUILD_PKG:=$(GO_PKG)
+GO_PKG_LDFLAGS_X:=main.Version=$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
-
-# Skip the unpack step (no tarball)
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-endef
-
-# Nothing to compile
-define Build/Compile
-endef
+$(call include_mk, golang-package.mk)
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 define Package/waverms-agent
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=WaveRMS Remote Management Agent
-  DEPENDS:=+lua +luasocket +libuci-lua +luci-lib-jsonc +mosquitto-client
+  DEPENDS:=$(GO_ARCH_DEPENDS)
 endef
 
 define Package/waverms-agent/description
   WaveRMS remote management agent for OpenWrt devices.
-  Connects to the WaveRMS server via MQTT and executes
-  configuration commands via UCI.
+  Connects to the WaveRMS server via MQTT, manages device
+  configuration via UCI.
 endef
 
 define Package/waverms-agent/conffiles
-/etc/config/waverms
+/etc/waverms/config
+endef
+
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
+	$(CP) $(CURDIR)/go.mod $(PKG_BUILD_DIR)/
+	$(CP) $(CURDIR)/go.sum $(PKG_BUILD_DIR)/
+	$(CP) $(CURDIR)/main.go $(PKG_BUILD_DIR)/
+	$(CP) $(CURDIR)/internal $(PKG_BUILD_DIR)/
 endef
 
 define Package/waverms-agent/install
-	$(INSTALL_DIR) $(1)/usr/share/waverms/lib
-	$(INSTALL_BIN)  ./files/usr/share/waverms/agent.lua        $(1)/usr/share/waverms/
-	$(INSTALL_DATA) ./files/usr/share/waverms/lib/*.lua        $(1)/usr/share/waverms/lib/
-	$(INSTALL_DIR)  $(1)/etc/init.d
-	$(INSTALL_BIN)  ./files/waverms-agent.init                 $(1)/etc/init.d/waverms-agent
-	$(INSTALL_DIR)  $(1)/etc/config
-	$(INSTALL_CONF) ./files/etc/config/waverms                 $(1)/etc/config/waverms
-	$(INSTALL_DIR)  $(1)/etc/waverms
+	$(call GoPackage/Package/Install/Bin,$(1))
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/waverms-agent.init $(1)/etc/init.d/waverms-agent
+	$(INSTALL_DIR) $(1)/etc/waverms
 endef
 
+$(eval $(call GoPackage,waverms-agent))
 $(eval $(call BuildPackage,waverms-agent))
