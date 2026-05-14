@@ -14,7 +14,7 @@ local function read_credentials()
     if not content then return nil end
     local t = {}
     for line in (content .. "\n"):gmatch("([^\n]+)\n") do
-        local k, v = line:match("^(%w+)=(.*)$")
+        local k, v = line:match("^([%w_]+)=(.*)$")
         if k then t[k] = v end
     end
     return t
