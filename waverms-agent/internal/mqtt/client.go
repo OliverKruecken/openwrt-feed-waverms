@@ -73,10 +73,17 @@ func (c *PahoClient) Connect(ctx context.Context, opts ConnectOptions) error {
 
 	addr := net.JoinHostPort(opts.BrokerHost, fmt.Sprintf("%d", opts.BrokerPort))
 
+	// opts.TLSConfig overrides the client-level config; fall back to the
+	// PahoClient's own tlsCfg (set at construction time in main.go).
+	tlsCfg := opts.TLSConfig
+	if tlsCfg == nil {
+		tlsCfg = c.tlsCfg
+	}
+
 	var conn net.Conn
 	var err error
-	if opts.TLSConfig != nil {
-		conn, err = tls.Dial("tcp", addr, opts.TLSConfig)
+	if tlsCfg != nil {
+		conn, err = tls.Dial("tcp", addr, tlsCfg)
 	} else {
 		conn, err = net.Dial("tcp", addr)
 	}

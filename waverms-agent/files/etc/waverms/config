@@ -1,0 +1,6 @@
+# WaveRMS agent configuration
+# Override BROKER_HOST with the image builder files/ overlay per batch.
+BROKER_HOST=mosquitto.moortwiete.de
+BROKER_PORT=8883
+TLS_INSECURE=false
+HEARTBEAT_INTERVAL=60

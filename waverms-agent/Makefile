@@ -21,7 +21,7 @@ define Package/waverms-agent
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=WaveRMS Remote Management Agent
-  DEPENDS:=$(GO_ARCH_DEPENDS)
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle
 endef
 
 define Package/waverms-agent/description
@@ -47,6 +47,7 @@ define Package/waverms-agent/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/waverms-agent.init $(1)/etc/init.d/waverms-agent
 	$(INSTALL_DIR) $(1)/etc/waverms
+	$(INSTALL_CONF) ./files/etc/waverms/config $(1)/etc/waverms/config
 endef
 
 $(eval $(call GoPackage,waverms-agent))
