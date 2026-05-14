@@ -33,3 +33,13 @@ func TopicBootstrapRegister() string {
 func TopicBootstrapResponse(tmpID string) string {
 	return fmt.Sprintf("bootstrap/%s/response", tmpID)
 }
+
+// TopicStateRequest returns the topic the server publishes on-demand state requests to.
+func TopicStateRequest(deviceID string) string {
+	return fmt.Sprintf("device/%s/state/request", deviceID)
+}
+
+// TopicState returns the topic the agent publishes actual UCI state reports to.
+func TopicState(deviceID string) string {
+	return fmt.Sprintf("device/%s/state", deviceID)
+}

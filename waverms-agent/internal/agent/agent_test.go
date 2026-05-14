@@ -238,3 +238,155 @@ func TestHandleCommand_StripUCIPrefix(t *testing.T) {
 
 	assert.Contains(t, uciMock.Calls, "raw set network.wan.proto=dhcp")
 }
+
+// systemUCIOutput is minimal valid uci export output for the system package.
+const systemUCIOutput = `package system
+
+config system
+	option hostname 'OpenWrt'
+`
+
+func TestHandleStateRequest_PublishesStateToCorrectTopic(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`{"packages":["system"]}`))
+
+	require.Len(t, mock.Published, 1)
+	assert.Equal(t, "device/test-device-uuid/state", mock.Published[0].Topic)
+}
+
+func TestHandleStateRequest_TriggerIsRequest(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`{"packages":["system"]}`))
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	assert.Equal(t, "request", state.Trigger)
+}
+
+func TestHandleStateRequest_IncludesRequestedPackage(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`{"packages":["system"]}`))
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	_, ok := state.Packages["system"]
+	assert.True(t, ok, "system package should be present in state payload")
+}
+
+func TestHandleStateRequest_SkipsMissingPackage(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+		Errors: map[string]error{
+			"export wireless": assert.AnError,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`{"packages":["system","wireless"]}`))
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	_, hasSystem := state.Packages["system"]
+	_, hasWireless := state.Packages["wireless"]
+	assert.True(t, hasSystem, "system should be present")
+	assert.False(t, hasWireless, "wireless failed to export and must be absent")
+}
+
+func TestHandleStateRequest_EmptyPackagesList_UsesDefaultPackages(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	// Only inject system; all others will silently return empty string → no sections → skipped.
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`{"packages":[]}`))
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	_, ok := state.Packages["system"]
+	assert.True(t, ok, "system should be in Packages when empty list triggers default set")
+}
+
+func TestHandleStateRequest_InvalidJSON_NoPanic(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	a.handleStateRequest("device/test-device-uuid/state/request", []byte(`not-json`))
+
+	assert.Empty(t, mock.Published, "no publish should occur on invalid JSON")
+}
+
+func TestPublishState_ConnectTrigger(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	err := a.publishState(context.Background(), "connect", []string{"system"})
+	require.NoError(t, err)
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	assert.Equal(t, "connect", state.Trigger)
+	assert.NotEmpty(t, state.Timestamp)
+}
+
+func TestRunSession_SubscribesStateRequest(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.runSession(ctx) //nolint:errcheck
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSession did not stop on ctx cancel")
+	}
+
+	assert.True(t, mock.HasSubscription("device/test-device-uuid/state/request"),
+		"runSession must subscribe to device/{id}/state/request")
+}

@@ -28,6 +28,18 @@ type UCICommandPayload struct {
 	Commands []string `json:"commands"`
 }
 
+// StateRequestPayload is received on device/{id}/state/request.
+type StateRequestPayload struct {
+	Packages []string `json:"packages"`
+}
+
+// StatePayload is published to device/{id}/state.
+type StatePayload struct {
+	Timestamp string                                          `json:"timestamp"`
+	Trigger   string                                          `json:"trigger"`
+	Packages  map[string]map[string][]map[string]interface{} `json:"packages"`
+}
+
 // AckPayload is published to device/{id}/ack after command execution.
 type AckPayload struct {
 	CmdID     string `json:"cmd_id"`
@@ -44,6 +56,10 @@ type InfoPayload struct {
 	AgentVersion  string `json:"agent_version"`
 	Timestamp     string `json:"timestamp"`
 }
+
+// defaultStatePackages is the set of UCI packages exported when the server
+// requests state with an empty packages list, or on connect.
+var defaultStatePackages = []string{"system", "network", "wireless", "firewall", "dhcp"}
 
 // Options holds all dependencies for the Agent.
 type Options struct {
@@ -172,8 +188,16 @@ func (a *Agent) runSession(ctx context.Context) error {
 		return fmt.Errorf("subscribe cmd: %w", err)
 	}
 
+	if err := a.mqtt.Subscribe(ctx, mqttclient.TopicStateRequest(a.creds.DeviceID), 1, a.handleStateRequest); err != nil {
+		return fmt.Errorf("subscribe state/request: %w", err)
+	}
+
 	if err := a.publishInfo(ctx); err != nil {
 		log.Printf("initial heartbeat failed: %v", err)
+	}
+
+	if err := a.publishState(ctx, "connect", nil); err != nil {
+		log.Printf("initial state publish failed: %v", err)
 	}
 
 	heartbeatInterval := time.Duration(a.cfg.HeartbeatInterval) * time.Second
@@ -281,6 +305,57 @@ func (a *Agent) publishAck(cmdID, status, output string) {
 	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
 		log.Printf("publish ack for %s: %v", cmdID, err)
 	}
+}
+
+// handleStateRequest processes an incoming state/request message.
+func (a *Agent) handleStateRequest(topic string, payload []byte) {
+	var req StateRequestPayload
+	if err := json.Unmarshal(payload, &req); err != nil {
+		log.Printf("invalid state/request payload on %s: %v", topic, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.publishState(ctx, "request", req.Packages); err != nil {
+		log.Printf("publish state on request: %v", err)
+	}
+}
+
+// publishState collects UCI state for the given packages and publishes it
+// to device/{id}/state. If pkgs is empty, defaultStatePackages is used.
+// Packages that fail to export are skipped and logged.
+func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string) error {
+	if len(pkgs) == 0 {
+		pkgs = defaultStatePackages
+	}
+
+	packages := make(map[string]map[string][]map[string]interface{})
+	for _, pkg := range pkgs {
+		out, err := a.uci.Export(pkg)
+		if err != nil {
+			log.Printf("uci export %s: %v (skipping)", pkg, err)
+			continue
+		}
+		sections, err := uci.ParseUCIExport(out)
+		if err != nil {
+			log.Printf("parse uci export %s: %v (skipping)", pkg, err)
+			continue
+		}
+		if len(sections) > 0 {
+			packages[pkg] = sections
+		}
+	}
+
+	state := StatePayload{
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Trigger:   trigger,
+		Packages:  packages,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	return a.mqtt.Publish(ctx, mqttclient.TopicState(a.creds.DeviceID), data, 1, false)
 }
 
 // readHostname reads the kernel hostname from /proc/sys/kernel/hostname.

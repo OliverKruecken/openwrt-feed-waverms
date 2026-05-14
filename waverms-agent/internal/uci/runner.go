@@ -94,9 +94,11 @@ func (r *RealUCIRunner) ExecRaw(args ...string) (string, error) {
 
 // MockUCIRunner records all calls for test assertions.
 // Inject errors via the Errors map keyed by the command string.
+// Inject output via the Results map keyed by the command string.
 type MockUCIRunner struct {
-	Calls  []string
-	Errors map[string]error
+	Calls   []string
+	Errors  map[string]error
+	Results map[string]string
 }
 
 func (m *MockUCIRunner) err(cmd string) error {
@@ -167,6 +169,11 @@ func (m *MockUCIRunner) Revert(pkg string) error {
 func (m *MockUCIRunner) Export(pkg string) (string, error) {
 	cmd := fmt.Sprintf("export %s", pkg)
 	m.record(cmd)
+	if m.Results != nil {
+		if out, ok := m.Results[cmd]; ok {
+			return out, m.err(cmd)
+		}
+	}
 	return "", m.err(cmd)
 }
 
