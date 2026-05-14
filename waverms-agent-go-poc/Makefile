@@ -12,7 +12,7 @@ GO_PKG:=github.com/OliverKruecken/waverms-agent
 GO_PKG_LDFLAGS_X:=main.Version=$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
-$(call include_mk, golang-package.mk)
+include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 define Package/waverms-agent-go-poc
   SECTION:=utils
@@ -24,12 +24,6 @@ endef
 define Package/waverms-agent-go-poc/description
   Minimal Go binary to validate Go toolchain support
   in the OpenWrt buildroot for the WaveRMS agent.
-endef
-
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) ./go.mod $(PKG_BUILD_DIR)/
-	$(CP) ./main.go $(PKG_BUILD_DIR)/
 endef
 
 define Package/waverms-agent-go-poc/install
