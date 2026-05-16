@@ -40,7 +40,11 @@ func (h *mqttDebugHandler) SetEnabled(enabled bool) {
 	h.state.mu.Lock()
 	h.state.enabled = enabled
 	h.state.mu.Unlock()
-	slog.Info("debug mode changed", "enabled", enabled)
+	if enabled {
+		slog.Info("debug mode enabled – log streaming active")
+	} else {
+		slog.Info("debug mode disabled")
+	}
 }
 
 func (h *mqttDebugHandler) mqttEnabled() bool {
