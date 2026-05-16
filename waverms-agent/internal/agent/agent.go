@@ -51,11 +51,13 @@ type AckPayload struct {
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID      string `json:"device_id"`
-	Hostname      string `json:"hostname"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	AgentVersion  string `json:"agent_version"`
-	Timestamp     string `json:"timestamp"`
+	DeviceID       string `json:"device_id"`
+	Hostname       string `json:"hostname"`
+	UptimeSeconds  int64  `json:"uptime_seconds"`
+	AgentVersion   string `json:"agent_version"`
+	Model          string `json:"model"`
+	OpenWrtVersion string `json:"openwrt_version"`
+	Timestamp      string `json:"timestamp"`
 }
 
 // defaultStatePackages is the set of UCI packages exported when the server
@@ -64,12 +66,14 @@ var defaultStatePackages = []string{"system", "network", "wireless", "firewall",
 
 // Options holds all dependencies for the Agent.
 type Options struct {
-	Config  *config.Config
-	Creds   *config.Credentials
-	MAC     string
-	MQTT    mqttclient.MQTTClient
-	UCI     uci.UCIRunner
-	Version string
+	Config         *config.Config
+	Creds          *config.Credentials
+	MAC            string
+	Model          string
+	OpenWrtVersion string
+	MQTT           mqttclient.MQTTClient
+	UCI            uci.UCIRunner
+	Version        string
 	// BootstrapOpts overrides the default bootstrap options (useful in tests).
 	BootstrapOpts *bootstrap.Options
 	// BootstrapTokenPath is used if BootstrapOpts is nil. Defaults to /etc/waverms/bootstrap_token.
@@ -80,12 +84,14 @@ type Options struct {
 
 // Agent is the main runtime component.
 type Agent struct {
-	cfg     *config.Config
-	creds   *config.Credentials
-	mac     string
-	mqtt    mqttclient.MQTTClient
-	uci     uci.UCIRunner
-	version string
+	cfg            *config.Config
+	creds          *config.Credentials
+	mac            string
+	model          string
+	openwrtVersion string
+	mqtt           mqttclient.MQTTClient
+	uci            uci.UCIRunner
+	version        string
 
 	bootstrapTokenPath string
 	credsPath          string
@@ -107,6 +113,8 @@ func New(opts *Options) *Agent {
 		cfg:                opts.Config,
 		creds:              opts.Creds,
 		mac:                opts.MAC,
+		model:              opts.Model,
+		openwrtVersion:     opts.OpenWrtVersion,
 		mqtt:               opts.MQTT,
 		uci:                opts.UCI,
 		version:            opts.Version,
@@ -120,10 +128,12 @@ func New(opts *Options) *Agent {
 func (a *Agent) Run(ctx context.Context) error {
 	if !a.creds.HasCredentials() {
 		bopts := bootstrap.Options{
-			TokenPath:    a.bootstrapTokenPath,
-			CredsPath:    a.credsPath,
-			MAC:          a.mac,
-			AgentVersion: a.version,
+			TokenPath:      a.bootstrapTokenPath,
+			CredsPath:      a.credsPath,
+			MAC:            a.mac,
+			Model:          a.model,
+			OpenWrtVersion: a.openwrtVersion,
+			AgentVersion:   a.version,
 		}
 		resp, err := bootstrap.Run(ctx, a.cfg, bopts, a.mqtt)
 		if err != nil {
@@ -259,11 +269,13 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 	slog.Debug("publishing heartbeat", "hostname", hostname, "uptime_seconds", uptime)
 
 	info := InfoPayload{
-		DeviceID:      a.creds.DeviceID,
-		Hostname:      hostname,
-		UptimeSeconds: uptime,
-		AgentVersion:  a.version,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		DeviceID:       a.creds.DeviceID,
+		Hostname:       hostname,
+		UptimeSeconds:  uptime,
+		AgentVersion:   a.version,
+		Model:          a.model,
+		OpenWrtVersion: a.openwrtVersion,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 	}
 
 	payload, err := json.Marshal(info)

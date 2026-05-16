@@ -51,12 +51,14 @@ func main() {
 	}
 
 	a := agent.New(&agent.Options{
-		Config:  cfg,
-		Creds:   creds,
-		MAC:     mac,
-		MQTT:    mqttclient.NewPahoClient(tlsCfg),
-		UCI:     &uci.RealUCIRunner{},
-		Version: Version,
+		Config:         cfg,
+		Creds:          creds,
+		MAC:            mac,
+		Model:          hardware.GetModel(),
+		OpenWrtVersion: hardware.GetOpenWrtVersion(),
+		MQTT:           mqttclient.NewPahoClient(tlsCfg),
+		UCI:            &uci.RealUCIRunner{},
+		Version:        Version,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
