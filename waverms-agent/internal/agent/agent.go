@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -88,6 +89,7 @@ type Agent struct {
 
 	bootstrapTokenPath string
 	credsPath          string
+	debugHandler       *mqttDebugHandler
 }
 
 // New creates an Agent from the provided options.
@@ -141,6 +143,19 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.cfg.BrokerPort = resp.BrokerPort
 		}
 	}
+
+	// Replace the global slog default with the MQTT-aware debug handler now that we
+	// have credentials. A fresh TextHandler is used as the inner handler to avoid a
+	// circular dependency: slog.Default().Handler() (the stdlib defaultHandler) routes
+	// writes back through log, but slog.SetDefault redirects log → our handler → cycle.
+	localLevel := slog.LevelInfo
+	if a.cfg.Debug {
+		localLevel = slog.LevelDebug
+	}
+	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: localLevel})
+	a.debugHandler = newMQTTDebugHandler(textHandler, a.mqtt, a.creds.DeviceID)
+	slog.SetDefault(slog.New(a.debugHandler))
+	log.SetFlags(0) // TextHandler owns timestamps; avoid double prefix on log.Printf calls
 
 	delay := time.Second
 	maxDelay := 300 * time.Second
@@ -198,6 +213,12 @@ func (a *Agent) runSession(ctx context.Context) error {
 		return fmt.Errorf("subscribe state/request: %w", err)
 	}
 	slog.Debug("subscribed", "topic", stateReqTopic)
+
+	controlTopic := mqttclient.TopicDebugControl(a.creds.DeviceID)
+	if err := a.mqtt.Subscribe(ctx, controlTopic, 1, a.handleDebugControl); err != nil {
+		return fmt.Errorf("subscribe debug/control: %w", err)
+	}
+	slog.Debug("subscribed", "topic", controlTopic)
 
 	if err := a.publishInfo(ctx); err != nil {
 		slog.Error("initial heartbeat failed", "err", err)
@@ -330,6 +351,21 @@ func (a *Agent) handleStateRequest(topic string, payload []byte) {
 	defer cancel()
 	if err := a.publishState(ctx, "request", req.Packages); err != nil {
 		slog.Error("publish state on request", "err", err)
+	}
+}
+
+// handleDebugControl toggles MQTT debug log publishing at runtime.
+// The server publishes {"enabled": true|false} to device/{id}/debug/control (retain: true).
+func (a *Agent) handleDebugControl(_ string, payload []byte) {
+	var msg struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		slog.Error("invalid debug/control payload", "err", err)
+		return
+	}
+	if a.debugHandler != nil {
+		a.debugHandler.SetEnabled(msg.Enabled)
 	}
 }
 
