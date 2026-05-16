@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -88,11 +89,45 @@ func (h *mqttDebugHandler) marshalRecord(r slog.Record) []byte {
 		"msg":   r.Message,
 	}
 	r.Attrs(func(a slog.Attr) bool {
-		m[a.Key] = a.Value.Any()
+		m[a.Key] = resolveValue(a.Value)
 		return true
 	})
 	b, _ := json.Marshal(m)
 	return b
+}
+
+// resolveValue converts a slog.Value to a JSON-serialisable Go value.
+// KindAny is the tricky case: the raw interface may be an error, a Stringer,
+// or an arbitrary struct with unexported fields — all of which json.Marshal
+// would either fail on or produce "{}".  We convert those to strings.
+func resolveValue(v slog.Value) any {
+	switch v.Kind() {
+	case slog.KindString:
+		return v.String()
+	case slog.KindInt64:
+		return v.Int64()
+	case slog.KindUint64:
+		return v.Uint64()
+	case slog.KindFloat64:
+		return v.Float64()
+	case slog.KindBool:
+		return v.Bool()
+	case slog.KindDuration:
+		return v.Duration().String()
+	case slog.KindTime:
+		return v.Time().UTC().Format(time.RFC3339Nano)
+	case slog.KindAny:
+		raw := v.Any()
+		if err, ok := raw.(error); ok {
+			return err.Error()
+		}
+		if s, ok := raw.(fmt.Stringer); ok {
+			return s.String()
+		}
+		return fmt.Sprintf("%v", raw)
+	default:
+		return v.String()
+	}
 }
 
 // WithAttrs returns a clone sharing the same toggle state but with additional attributes
