@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -150,7 +150,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("session ended (%v), reconnecting in %v", err, delay)
+		slog.Info("session ended, reconnecting", "err", err, "delay", delay)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -164,6 +164,8 @@ func (a *Agent) Run(ctx context.Context) error {
 // sends an initial heartbeat, and then drives the heartbeat loop until the
 // connection is lost or ctx is cancelled.
 func (a *Agent) runSession(ctx context.Context) error {
+	slog.Debug("connecting", "host", a.cfg.BrokerHost, "port", a.cfg.BrokerPort, "client_id", a.creds.DeviceID)
+
 	lwt := &mqttclient.LWT{
 		Topic:   mqttclient.TopicStatus(a.creds.DeviceID),
 		Payload: []byte("offline"),
@@ -183,21 +185,26 @@ func (a *Agent) runSession(ctx context.Context) error {
 	if err := a.mqtt.Connect(ctx, connOpts); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
+	slog.Debug("connected", "client_id", a.creds.DeviceID)
 
-	if err := a.mqtt.Subscribe(ctx, mqttclient.TopicCommand(a.creds.DeviceID), 1, a.handleCommand); err != nil {
+	cmdTopic := mqttclient.TopicCommand(a.creds.DeviceID)
+	if err := a.mqtt.Subscribe(ctx, cmdTopic, 1, a.handleCommand); err != nil {
 		return fmt.Errorf("subscribe cmd: %w", err)
 	}
+	slog.Debug("subscribed", "topic", cmdTopic)
 
-	if err := a.mqtt.Subscribe(ctx, mqttclient.TopicStateRequest(a.creds.DeviceID), 1, a.handleStateRequest); err != nil {
+	stateReqTopic := mqttclient.TopicStateRequest(a.creds.DeviceID)
+	if err := a.mqtt.Subscribe(ctx, stateReqTopic, 1, a.handleStateRequest); err != nil {
 		return fmt.Errorf("subscribe state/request: %w", err)
 	}
+	slog.Debug("subscribed", "topic", stateReqTopic)
 
 	if err := a.publishInfo(ctx); err != nil {
-		log.Printf("initial heartbeat failed: %v", err)
+		slog.Error("initial heartbeat failed", "err", err)
 	}
 
 	if err := a.publishState(ctx, "connect", nil); err != nil {
-		log.Printf("initial state publish failed: %v", err)
+		slog.Error("initial state publish failed", "err", err)
 	}
 
 	heartbeatInterval := time.Duration(a.cfg.HeartbeatInterval) * time.Second
@@ -218,7 +225,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 			return fmt.Errorf("connection lost")
 		case <-ticker.C:
 			if err := a.publishInfo(ctx); err != nil {
-				log.Printf("heartbeat failed: %v", err)
+				slog.Error("heartbeat failed", "err", err)
 			}
 		}
 	}
@@ -228,6 +235,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 func (a *Agent) publishInfo(ctx context.Context) error {
 	hostname := readHostname()
 	uptime := readUptimeSeconds()
+	slog.Debug("publishing heartbeat", "hostname", hostname, "uptime_seconds", uptime)
 
 	info := InfoPayload{
 		DeviceID:      a.creds.DeviceID,
@@ -249,9 +257,10 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 func (a *Agent) handleCommand(topic string, payload []byte) {
 	var cmd Command
 	if err := json.Unmarshal(payload, &cmd); err != nil {
-		log.Printf("invalid command payload on %s: %v", topic, err)
+		slog.Error("invalid command payload", "topic", topic, "err", err)
 		return
 	}
+	slog.Debug("received command", "cmd_id", cmd.CmdID, "type", cmd.Type)
 
 	var output strings.Builder
 	status := "ok"
@@ -259,7 +268,7 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 	if cmd.Type == "uci_set" {
 		var uciPayload UCICommandPayload
 		if err := json.Unmarshal(cmd.Payload, &uciPayload); err != nil {
-			log.Printf("invalid uci_set payload for cmd %s: %v", cmd.CmdID, err)
+			slog.Error("invalid uci_set payload", "cmd_id", cmd.CmdID, "err", err)
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
 			return
 		}
@@ -269,6 +278,7 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			if len(args) == 0 {
 				continue
 			}
+			slog.Debug("uci exec", "args", args)
 			out, err := a.uci.ExecRaw(args...)
 			if out != "" {
 				output.WriteString(out)
@@ -289,6 +299,7 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 
 // publishAck sends the command acknowledgement to device/{id}/ack.
 func (a *Agent) publishAck(cmdID, status, output string) {
+	slog.Debug("publishing ack", "cmd_id", cmdID, "status", status)
 	ack := AckPayload{
 		CmdID:     cmdID,
 		Status:    status,
@@ -297,13 +308,13 @@ func (a *Agent) publishAck(cmdID, status, output string) {
 	}
 	payload, err := json.Marshal(ack)
 	if err != nil {
-		log.Printf("marshal ack: %v", err)
+		slog.Error("marshal ack", "err", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
-		log.Printf("publish ack for %s: %v", cmdID, err)
+		slog.Error("publish ack", "cmd_id", cmdID, "err", err)
 	}
 }
 
@@ -311,13 +322,14 @@ func (a *Agent) publishAck(cmdID, status, output string) {
 func (a *Agent) handleStateRequest(topic string, payload []byte) {
 	var req StateRequestPayload
 	if err := json.Unmarshal(payload, &req); err != nil {
-		log.Printf("invalid state/request payload on %s: %v", topic, err)
+		slog.Error("invalid state/request payload", "topic", topic, "err", err)
 		return
 	}
+	slog.Debug("state request received", "packages", req.Packages)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := a.publishState(ctx, "request", req.Packages); err != nil {
-		log.Printf("publish state on request: %v", err)
+		slog.Error("publish state on request", "err", err)
 	}
 }
 
@@ -328,17 +340,18 @@ func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string)
 	if len(pkgs) == 0 {
 		pkgs = defaultStatePackages
 	}
+	slog.Debug("publishing state", "trigger", trigger, "packages", pkgs)
 
 	packages := make(map[string]map[string][]map[string]interface{})
 	for _, pkg := range pkgs {
 		out, err := a.uci.Export(pkg)
 		if err != nil {
-			log.Printf("uci export %s: %v (skipping)", pkg, err)
+			slog.Warn("uci export failed, skipping", "package", pkg, "err", err)
 			continue
 		}
 		sections, err := uci.ParseUCIExport(out)
 		if err != nil {
-			log.Printf("parse uci export %s: %v (skipping)", pkg, err)
+			slog.Warn("uci export parse failed, skipping", "package", pkg, "err", err)
 			continue
 		}
 		if len(sections) > 0 {

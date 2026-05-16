@@ -4,3 +4,5 @@ BROKER_HOST=mosquitto.moortwiete.de
 BROKER_PORT=8883
 TLS_INSECURE=false
 HEARTBEAT_INTERVAL=60
+# Set to true to enable verbose debug logging (visible via logread on OpenWrt)
+DEBUG=false

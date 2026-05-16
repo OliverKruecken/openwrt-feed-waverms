@@ -17,6 +17,7 @@ type Config struct {
 	TLSInsecure       bool
 	HeartbeatInterval int
 	AgentVersion      string
+	Debug             bool
 }
 
 const (
@@ -74,6 +75,8 @@ func Load(path string) (*Config, error) {
 			}
 		case "AGENT_VERSION":
 			cfg.AgentVersion = value
+		case "DEBUG":
+			cfg.Debug = strings.EqualFold(value, "true")
 		}
 	}
 

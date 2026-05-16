@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -64,6 +65,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 		opts.TmpID = uuid.New().String()
 	}
 
+	slog.Debug("bootstrap: reading token", "path", opts.TokenPath)
 	token, err := config.ReadBootstrapToken(opts.TokenPath)
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap token: %w", err)
@@ -76,6 +78,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 		Username:   "bootstrap",
 		Password:   token,
 	}
+	slog.Debug("bootstrap: connecting", "tmp_id", opts.TmpID, "host", cfg.BrokerHost, "port", cfg.BrokerPort)
 	if err := client.Connect(ctx, connOpts); err != nil {
 		return nil, fmt.Errorf("bootstrap connect: %w", err)
 	}
@@ -95,6 +98,7 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 	}); err != nil {
 		return nil, fmt.Errorf("subscribe bootstrap response: %w", err)
 	}
+	slog.Debug("bootstrap: subscribed to response", "topic", responseTopic)
 
 	req := BootstrapRequest{
 		TmpID:          opts.TmpID,
@@ -113,9 +117,11 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 	if err := client.Publish(ctx, mqttclient.TopicBootstrapRegister(), payload, 1, false); err != nil {
 		return nil, fmt.Errorf("publish bootstrap request: %w", err)
 	}
+	slog.Debug("bootstrap: registration published", "tmp_id", opts.TmpID, "mac", opts.MAC)
 
 	select {
 	case resp := <-responseCh:
+		slog.Info("bootstrap: complete", "device_id", resp.DeviceID)
 		if err := config.SaveCredentials(opts.CredsPath, resp.DeviceID, resp.Secret, resp.BrokerHost, resp.BrokerPort); err != nil {
 			return nil, fmt.Errorf("save credentials: %w", err)
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,13 +20,18 @@ import (
 var Version = "1.0.0"
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime)
-
 	cfg, err := config.Load("/etc/waverms/config")
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 	cfg.AgentVersion = Version
+
+	logLevel := slog.LevelInfo
+	if cfg.Debug {
+		logLevel = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+	log.SetFlags(0) // slog handler owns timestamps
 
 	creds, err := config.LoadCredentials("/etc/waverms/credentials")
 	if err != nil && !os.IsNotExist(err) {
