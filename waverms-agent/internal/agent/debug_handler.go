@@ -11,6 +11,11 @@ import (
 	mqttclient "github.com/OliverKruecken/waverms-agent/internal/mqtt"
 )
 
+// maxDebugPublishes is the maximum number of MQTT debug-log publishes that may
+// be in flight simultaneously. Excess records are dropped rather than spawning
+// unbounded goroutines, which would grow RSS significantly on slow connections.
+const maxDebugPublishes = 8
+
 // debugState holds the runtime toggle flag, shared across all WithAttrs/WithGroup clones.
 type debugState struct {
 	mu      sync.RWMutex
@@ -25,6 +30,9 @@ type mqttDebugHandler struct {
 	mqtt     mqttclient.MQTTClient
 	deviceID string
 	state    *debugState
+	// sem is a semaphore that caps concurrent MQTT publishes to maxDebugPublishes.
+	// All clones share the same semaphore so the cap is per-handler-tree, not per-clone.
+	sem chan struct{}
 }
 
 func newMQTTDebugHandler(text slog.Handler, mqtt mqttclient.MQTTClient, deviceID string) *mqttDebugHandler {
@@ -33,6 +41,7 @@ func newMQTTDebugHandler(text slog.Handler, mqtt mqttclient.MQTTClient, deviceID
 		mqtt:     mqtt,
 		deviceID: deviceID,
 		state:    &debugState{},
+		sem:      make(chan struct{}, maxDebugPublishes),
 	}
 }
 
@@ -73,11 +82,18 @@ func (h *mqttDebugHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	payload := h.marshalRecord(r)
 	topic := mqttclient.TopicDebugLog(h.deviceID)
-	go func() {
-		ctx2, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = h.mqtt.Publish(ctx2, topic, payload, 0, false)
-	}()
+
+	select {
+	case h.sem <- struct{}{}:
+		go func() {
+			defer func() { <-h.sem }()
+			ctx2, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = h.mqtt.Publish(ctx2, topic, payload, 0, false)
+		}()
+	default:
+		// semaphore full – drop this debug record rather than accumulating goroutines
+	}
 
 	return nil
 }
@@ -138,6 +154,7 @@ func (h *mqttDebugHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		mqtt:     h.mqtt,
 		deviceID: h.deviceID,
 		state:    h.state,
+		sem:      h.sem,
 	}
 }
 
@@ -148,5 +165,6 @@ func (h *mqttDebugHandler) WithGroup(name string) slog.Handler {
 		mqtt:     h.mqtt,
 		deviceID: h.deviceID,
 		state:    h.state,
+		sem:      h.sem,
 	}
 }

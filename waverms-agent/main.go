@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"syscall"
 
 	"github.com/OliverKruecken/waverms-agent/internal/agent"
@@ -20,6 +23,24 @@ import (
 var Version = "1.0.0"
 
 func main() {
+	// On embedded targets GOMAXPROCS defaults to the number of CPU cores, which
+	// causes the Go runtime to reserve proportionally more virtual address space
+	// and spin up more GC workers. Single-threading the scheduler keeps VSZ in
+	// check on devices with tight memory.
+	runtime.GOMAXPROCS(1)
+
+	// GOMEMLIMIT caps the soft heap target so the GC runs more aggressively
+	// before the OOM killer steps in. The default (math.MaxInt64) is fine on
+	// servers but wrong for embedded. Honour the env var if set; otherwise
+	// default to 32 MiB, which is enough for normal operation.
+	if limitStr := os.Getenv("GOMEMLIMIT"); limitStr != "" {
+		if v, err := strconv.ParseInt(limitStr, 10, 64); err == nil {
+			debug.SetMemoryLimit(v)
+		}
+	} else {
+		debug.SetMemoryLimit(32 << 20) // 32 MiB
+	}
+
 	cfg, err := config.Load("/etc/waverms/config")
 	if err != nil {
 		log.Fatalf("config: %v", err)
