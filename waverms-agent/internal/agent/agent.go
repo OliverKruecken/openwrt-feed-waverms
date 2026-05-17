@@ -61,9 +61,27 @@ type InfoPayload struct {
 	Timestamp      string `json:"timestamp"`
 }
 
-// defaultStatePackages is the set of UCI packages exported when the server
-// requests state with an empty packages list, or on connect.
-var defaultStatePackages = []string{"system", "network", "wireless", "firewall", "dhcp"}
+// fallbackStatePackages is used only when /etc/config cannot be read.
+var fallbackStatePackages = []string{"system", "network", "wireless", "firewall", "dhcp"}
+
+// discoverPackages lists all regular files in /etc/config and returns them as
+// UCI package names. Falls back to fallbackStatePackages on any read error.
+func discoverPackages() []string {
+	entries, err := os.ReadDir("/etc/config")
+	if err != nil {
+		return fallbackStatePackages
+	}
+	pkgs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			pkgs = append(pkgs, e.Name())
+		}
+	}
+	if len(pkgs) == 0 {
+		return fallbackStatePackages
+	}
+	return pkgs
+}
 
 // Options holds all dependencies for the Agent.
 type Options struct {
@@ -409,7 +427,7 @@ func (a *Agent) handleDebugControl(_ string, payload []byte) {
 // Packages that fail to export are skipped and logged.
 func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string) error {
 	if len(pkgs) == 0 {
-		pkgs = defaultStatePackages
+		pkgs = discoverPackages()
 	}
 	slog.Debug("publishing state", "trigger", trigger, "packages", pkgs)
 
