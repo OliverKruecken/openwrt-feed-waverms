@@ -180,6 +180,11 @@ func (m *MockUCIRunner) Export(pkg string) (string, error) {
 func (m *MockUCIRunner) Show(pkg string) (string, error) {
 	cmd := fmt.Sprintf("show %s", pkg)
 	m.record(cmd)
+	if m.Results != nil {
+		if out, ok := m.Results[cmd]; ok {
+			return out, m.err(cmd)
+		}
+	}
 	return "", m.err(cmd)
 }
 

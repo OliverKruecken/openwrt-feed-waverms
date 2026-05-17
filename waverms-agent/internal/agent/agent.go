@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OliverKruecken/waverms-agent/internal/apply"
 	"github.com/OliverKruecken/waverms-agent/internal/bootstrap"
 	"github.com/OliverKruecken/waverms-agent/internal/config"
 	mqttclient "github.com/OliverKruecken/waverms-agent/internal/mqtt"
@@ -298,7 +299,8 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 	var output strings.Builder
 	status := "ok"
 
-	if cmd.Type == "uci_set" {
+	switch cmd.Type {
+	case "uci_set":
 		var uciPayload UCICommandPayload
 		if err := json.Unmarshal(cmd.Payload, &uciPayload); err != nil {
 			slog.Error("invalid uci_set payload", "cmd_id", cmd.CmdID, "err", err)
@@ -322,7 +324,28 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 				status = "error"
 			}
 		}
-	} else {
+
+	case "config_apply":
+		applier := apply.New(a.uci)
+		committed, err := applier.Apply(cmd.Payload)
+		if err != nil {
+			slog.Error("config_apply failed", "cmd_id", cmd.CmdID, "err", err)
+			a.publishAck(cmd.CmdID, "error", err.Error())
+			return
+		}
+		slog.Info("config_apply succeeded", "cmd_id", cmd.CmdID, "packages", committed)
+		if reloadErrs := apply.RunReloads(committed); len(reloadErrs) > 0 {
+			slog.Warn("config_apply: service reload failures", "errors", strings.Join(reloadErrs, "; "))
+		}
+		a.publishAck(cmd.CmdID, "ok", "")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := a.publishState(ctx, "apply_success", committed); err != nil {
+			slog.Error("publish state after config_apply", "err", err)
+		}
+		return
+
+	default:
 		output.WriteString(fmt.Sprintf("unknown command type: %s", cmd.Type))
 		status = "error"
 	}

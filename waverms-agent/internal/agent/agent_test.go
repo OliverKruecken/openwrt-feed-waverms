@@ -338,6 +338,116 @@ func TestHandleStateRequest_EmptyPackagesList_UsesDefaultPackages(t *testing.T) 
 	assert.True(t, ok, "system should be in Packages when empty list triggers default set")
 }
 
+func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	payload := `{
+		"cmd_id": "apply-ok",
+		"type": "config_apply",
+		"payload": {
+			"system": {
+				".mode": "merge",
+				"system": [{ ".name": "system", "hostname": "router-01" }]
+			}
+		}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Should publish ack + state (apply_success).
+	require.Len(t, mock.Published, 2)
+
+	topics := []string{mock.Published[0].Topic, mock.Published[1].Topic}
+	assert.Contains(t, topics, "device/test-device-uuid/ack")
+	assert.Contains(t, topics, "device/test-device-uuid/state")
+
+	// Find the ack message.
+	var ack AckPayload
+	for _, pub := range mock.Published {
+		if pub.Topic == "device/test-device-uuid/ack" {
+			require.NoError(t, json.Unmarshal(pub.Payload, &ack))
+		}
+	}
+	assert.Equal(t, "apply-ok", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+
+	// UCI staging + commit should have been called.
+	assert.Contains(t, uciMock.Calls, "set-type system.system=system")
+	assert.Contains(t, uciMock.Calls, "set system.system.hostname=router-01")
+	assert.Contains(t, uciMock.Calls, "commit system")
+}
+
+func TestHandleCommand_ConfigApply_StagingError_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"set system.system.hostname=router-01": assert.AnError,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	payload := `{
+		"cmd_id": "apply-err",
+		"type": "config_apply",
+		"payload": {
+			"system": {
+				".mode": "merge",
+				"system": [{ ".name": "system", "hostname": "router-01" }]
+			}
+		}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Only ack published (no state on error).
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "apply-err", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.NotEmpty(t, ack.Output)
+
+	// Revert must have been called.
+	assert.Contains(t, uciMock.Calls, "revert system")
+}
+
+func TestHandleCommand_ConfigApply_StateTriggerIsApplySuccess(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+
+	payload := `{
+		"cmd_id": "apply-trigger",
+		"type": "config_apply",
+		"payload": {
+			"system": {
+				".mode": "merge",
+				"system": [{ ".name": "system", "hostname": "test-host" }]
+			}
+		}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Find the state message and verify trigger.
+	for _, pub := range mock.Published {
+		if pub.Topic == "device/test-device-uuid/state" {
+			var state StatePayload
+			require.NoError(t, json.Unmarshal(pub.Payload, &state))
+			assert.Equal(t, "apply_success", state.Trigger)
+			return
+		}
+	}
+	t.Fatal("state message not published")
+}
+
 func TestHandleStateRequest_InvalidJSON_NoPanic(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
