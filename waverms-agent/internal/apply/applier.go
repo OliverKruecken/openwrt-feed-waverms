@@ -169,10 +169,12 @@ func (a *Applier) applySection(pkgName, sectionType string, section map[string]i
 		sectionID = id
 	}
 
+	desiredKeys := make(map[string]bool)
 	for key, val := range section {
 		if strings.HasPrefix(key, ".") {
 			continue
 		}
+		desiredKeys[key] = true
 		switch v := val.(type) {
 		case []interface{}:
 			// List option: clear existing entries, then add each new value.
@@ -185,6 +187,47 @@ func (a *Applier) applySection(pkgName, sectionType string, section map[string]i
 		default:
 			if err := a.runner.Set(pkgName, sectionID, key, fmt.Sprintf("%v", val)); err != nil {
 				return fmt.Errorf("set %s.%s.%s: %w", pkgName, sectionID, key, err)
+			}
+		}
+	}
+
+	// For named sections: remove options present on the device but absent from desired.
+	// This gives exact-match semantics for the section content while package-level merge
+	// still leaves unmentioned sections untouched.
+	if hasName {
+		if err := a.cleanStaleOptions(pkgName, sectionID, desiredKeys); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanStaleOptions deletes UCI options that exist on the device for the given named
+// section but are not present in the desired config. Uses the existing Show() output.
+func (a *Applier) cleanStaleOptions(pkgName, sectionID string, desiredKeys map[string]bool) error {
+	out, err := a.runner.Show(pkgName)
+	if err != nil {
+		return nil // package not committed yet — nothing to clean
+	}
+	prefix := pkgName + "." + sectionID + "."
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(line, prefix)
+		eqIdx := strings.Index(rest, "=")
+		if eqIdx < 0 {
+			continue
+		}
+		optKey := rest[:eqIdx]
+		// Skip dot-prefixed meta-keys and nested paths (sub-option lines).
+		if strings.HasPrefix(optKey, ".") || strings.Contains(optKey, ".") {
+			continue
+		}
+		if !desiredKeys[optKey] {
+			if err := a.runner.DeleteOption(pkgName, sectionID, optKey); err != nil {
+				return fmt.Errorf("delete stale option %s.%s.%s: %w", pkgName, sectionID, optKey, err)
 			}
 		}
 	}

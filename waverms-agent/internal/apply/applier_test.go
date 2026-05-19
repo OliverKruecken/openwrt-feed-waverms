@@ -194,6 +194,52 @@ func TestApply_EmptyConfig_ReturnsNoPackages(t *testing.T) {
 	assert.Empty(t, mock.Calls)
 }
 
+func TestApply_MergeMode_RemovesStaleOption(t *testing.T) {
+	// Device has "disabled='1'" on wifinet0 but desired config does not include it.
+	mock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"show wireless": "wireless.wifinet0=wifi-iface\nwireless.wifinet0.mode='mesh'\nwireless.wifinet0.disabled='1'\n",
+		},
+	}
+	a := apply.New(mock)
+
+	cfg := `{
+  "wireless": {
+    ".mode": "merge",
+    "wifi-iface": [
+      { ".name": "wifinet0", "mode": "mesh" }
+    ]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	assert.Contains(t, mock.Calls, "delete-option wireless.wifinet0.disabled",
+		"stale option 'disabled' should be removed")
+	assert.NotContains(t, mock.Calls, "delete-option wireless.wifinet0.mode",
+		"desired option 'mode' must not be deleted")
+}
+
+func TestApply_AnonymousSection_SkipsStaleClean(t *testing.T) {
+	mock := &uci.MockUCIRunner{}
+	a := apply.New(mock)
+
+	cfg := `{
+  "firewall": {
+    ".mode": "merge",
+    "rule": [
+      { "name": "Allow-SSH", "dest_port": "22" }
+    ]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	// cleanStaleOptions must not be called for anonymous sections (no .name).
+	assert.NotContains(t, mock.Calls, "show firewall",
+		"Show must not be called for stale-option cleanup on anonymous sections")
+}
+
 func TestServiceReloads_MapsKnownPackages(t *testing.T) {
 	cmds := apply.ServiceReloads([]string{"wireless", "network"})
 	assert.Contains(t, cmds, "wifi reload")
