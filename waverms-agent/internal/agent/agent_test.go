@@ -3,17 +3,20 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/OliverKruecken/waverms-agent/internal/config"
+	"github.com/OliverKruecken/waverms-agent/internal/filewriter"
 	mqttclient "github.com/OliverKruecken/waverms-agent/internal/mqtt"
 	"github.com/OliverKruecken/waverms-agent/internal/uci"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestAgent(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner) *Agent {
+func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner, fw *filewriter.MockFileWriter) *Agent {
 	cfg := &config.Config{
 		BrokerHost:        "broker.local",
 		BrokerPort:        8883,
@@ -24,13 +27,18 @@ func newTestAgent(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner) *
 		Secret:   "test-secret",
 	}
 	return New(&Options{
-		Config:  cfg,
-		Creds:   creds,
-		MAC:     "aa:bb:cc:dd:ee:ff",
-		MQTT:    mock,
-		UCI:     uciMock,
-		Version: "1.0.0",
+		Config:     cfg,
+		Creds:      creds,
+		MAC:        "aa:bb:cc:dd:ee:ff",
+		MQTT:       mock,
+		UCI:        uciMock,
+		FileWriter: fw,
+		Version:    "1.0.0",
 	})
+}
+
+func newTestAgent(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner) *Agent {
+	return newTestAgentWithFW(mock, uciMock, &filewriter.MockFileWriter{})
 }
 
 func TestPublishInfo_SendsToCorrectTopic(t *testing.T) {
@@ -499,4 +507,137 @@ func TestRunSession_SubscribesStateRequest(t *testing.T) {
 
 	assert.True(t, mock.HasSubscription("device/test-device-uuid/state/request"),
 		"runSession must subscribe to device/{id}/state/request")
+}
+
+// ---- file_write command tests -----------------------------------------------
+
+func TestHandleCommand_FileWrite_WritesFileAndAcksOk(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{
+		"cmd_id": "fw-ok",
+		"type": "file_write",
+		"payload": {"path": "/etc/dropbear/authorized_keys", "content": "ssh-ed25519 AAAA...", "mode": "0600"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Verify file write was recorded.
+	require.Len(t, fw.Calls, 1)
+	assert.Equal(t, "/etc/dropbear/authorized_keys", fw.Calls[0].Path)
+	assert.Equal(t, []byte("ssh-ed25519 AAAA..."), fw.Calls[0].Content)
+	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
+
+	// Verify ack.
+	require.Len(t, mock.Published, 1)
+	assert.Equal(t, "device/test-device-uuid/ack", mock.Published[0].Topic)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-ok", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_FileWrite_WriteError_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{
+		Errors: map[string]error{
+			"/etc/dropbear/authorized_keys": errors.New("permission denied"),
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{
+		"cmd_id": "fw-err",
+		"type": "file_write",
+		"payload": {"path": "/etc/dropbear/authorized_keys", "content": "key data", "mode": "0600"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-err", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "permission denied")
+}
+
+func TestHandleCommand_FileWrite_InvalidPayload_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id": "fw-bad", "type": "file_write", "payload": "not-an-object"}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-bad", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "invalid payload")
+
+	// WriteFile must not have been called.
+	assert.Empty(t, fw.Calls)
+}
+
+func TestHandleCommand_FileWrite_MissingPath_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id": "fw-nopath", "type": "file_write", "payload": {"path": "", "content": "data"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-nopath", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "path is required")
+
+	assert.Empty(t, fw.Calls)
+}
+
+func TestHandleCommand_FileWrite_CustomMode_UsesCorrectPerm(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{
+		"cmd_id": "fw-mode",
+		"type": "file_write",
+		"payload": {"path": "/tmp/test.txt", "content": "hello", "mode": "0644"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, fw.Calls, 1)
+	assert.Equal(t, os.FileMode(0644), fw.Calls[0].Perm)
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_FileWrite_NoMode_Defaults0600(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	// Omit "mode" field entirely.
+	payload := `{
+		"cmd_id": "fw-nomode",
+		"type": "file_write",
+		"payload": {"path": "/tmp/nomode.txt", "content": "data"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, fw.Calls, 1)
+	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
 }

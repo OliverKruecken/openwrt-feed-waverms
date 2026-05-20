@@ -14,6 +14,7 @@ import (
 	"github.com/OliverKruecken/waverms-agent/internal/apply"
 	"github.com/OliverKruecken/waverms-agent/internal/bootstrap"
 	"github.com/OliverKruecken/waverms-agent/internal/config"
+	"github.com/OliverKruecken/waverms-agent/internal/filewriter"
 	mqttclient "github.com/OliverKruecken/waverms-agent/internal/mqtt"
 	"github.com/OliverKruecken/waverms-agent/internal/uci"
 )
@@ -28,6 +29,13 @@ type Command struct {
 // UCICommandPayload is the inner payload for type "uci_set".
 type UCICommandPayload struct {
 	Commands []string `json:"commands"`
+}
+
+// FileWriteCommandPayload is the inner payload for type "file_write".
+type FileWriteCommandPayload struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Mode    string `json:"mode"`
 }
 
 // StateRequestPayload is received on device/{id}/state/request.
@@ -93,6 +101,8 @@ type Options struct {
 	MQTT           mqttclient.MQTTClient
 	UCI            uci.UCIRunner
 	Version        string
+	// FileWriter is used to write files on the device filesystem. Defaults to OSFileWriter.
+	FileWriter filewriter.FileWriter
 	// BootstrapOpts overrides the default bootstrap options (useful in tests).
 	BootstrapOpts *bootstrap.Options
 	// BootstrapTokenPath is used if BootstrapOpts is nil. Defaults to /etc/waverms/bootstrap_token.
@@ -110,6 +120,7 @@ type Agent struct {
 	openwrtVersion string
 	mqtt           mqttclient.MQTTClient
 	uci            uci.UCIRunner
+	fileWriter     filewriter.FileWriter
 	version        string
 
 	bootstrapTokenPath string
@@ -128,6 +139,11 @@ func New(opts *Options) *Agent {
 		credsPath = "/etc/waverms/credentials"
 	}
 
+	fw := opts.FileWriter
+	if fw == nil {
+		fw = &filewriter.OSFileWriter{}
+	}
+
 	return &Agent{
 		cfg:                opts.Config,
 		creds:              opts.Creds,
@@ -136,6 +152,7 @@ func New(opts *Options) *Agent {
 		openwrtVersion:     opts.OpenWrtVersion,
 		mqtt:               opts.MQTT,
 		uci:                opts.UCI,
+		fileWriter:         fw,
 		version:            opts.Version,
 		bootstrapTokenPath: tokenPath,
 		credsPath:          credsPath,
@@ -361,6 +378,34 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 		if err := a.publishState(ctx, "apply_success", committed); err != nil {
 			slog.Error("publish state after config_apply", "err", err)
 		}
+		return
+
+	case "file_write":
+		var fwPayload FileWriteCommandPayload
+		if err := json.Unmarshal(cmd.Payload, &fwPayload); err != nil {
+			slog.Error("invalid file_write payload", "cmd_id", cmd.CmdID, "err", err)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+			return
+		}
+		if fwPayload.Path == "" {
+			a.publishAck(cmd.CmdID, "error", "path is required")
+			return
+		}
+		// Parse mode octal string ("0600" → os.FileMode). Default to 0600 if missing or invalid.
+		perm := os.FileMode(0600)
+		if fwPayload.Mode != "" {
+			var modeInt uint32
+			if _, err := fmt.Sscanf(fwPayload.Mode, "%o", &modeInt); err == nil {
+				perm = os.FileMode(modeInt)
+			}
+		}
+		if err := a.fileWriter.WriteFile(fwPayload.Path, []byte(fwPayload.Content), perm); err != nil {
+			slog.Error("file_write failed", "cmd_id", cmd.CmdID, "path", fwPayload.Path, "err", err)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", fwPayload.Path, err))
+			return
+		}
+		slog.Info("file_write succeeded", "cmd_id", cmd.CmdID, "path", fwPayload.Path)
+		a.publishAck(cmd.CmdID, "ok", "")
 		return
 
 	default:
