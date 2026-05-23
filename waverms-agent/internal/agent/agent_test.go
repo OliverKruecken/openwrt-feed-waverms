@@ -66,6 +66,33 @@ func TestPublishInfo_PayloadContainsDeviceID(t *testing.T) {
 	assert.NotEmpty(t, info.Timestamp)
 }
 
+func TestPublishInfo_PayloadContainsCapabilities(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.NotEmpty(t, info.Capabilities, "capabilities must be non-empty")
+}
+
+func TestPublishInfo_CapabilitiesContainExpectedTypes(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "uci_set")
+	assert.Contains(t, info.Capabilities, "config_apply")
+	assert.Contains(t, info.Capabilities, "file_write")
+	assert.Contains(t, info.Capabilities, "state_report")
+}
+
 func TestHandleCommand_UCISet_ExecutesAndAcks(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}

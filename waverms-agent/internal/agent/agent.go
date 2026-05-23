@@ -60,13 +60,23 @@ type AckPayload struct {
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID       string `json:"device_id"`
-	Hostname       string `json:"hostname"`
-	UptimeSeconds  int64  `json:"uptime_seconds"`
-	AgentVersion   string `json:"agent_version"`
-	Model          string `json:"model"`
-	OpenWrtVersion string `json:"openwrt_version"`
-	Timestamp      string `json:"timestamp"`
+	DeviceID       string   `json:"device_id"`
+	Hostname       string   `json:"hostname"`
+	UptimeSeconds  int64    `json:"uptime_seconds"`
+	AgentVersion   string   `json:"agent_version"`
+	Model          string   `json:"model"`
+	OpenWrtVersion string   `json:"openwrt_version"`
+	Timestamp      string   `json:"timestamp"`
+	Capabilities   []string `json:"capabilities"`
+}
+
+// supportedCapabilities is the list of command types this agent version supports.
+// Append to this list whenever a new command type is implemented.
+var supportedCapabilities = []string{
+	"uci_set",
+	"config_apply",
+	"file_write",
+	"state_report",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -312,6 +322,7 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 		Model:          a.model,
 		OpenWrtVersion: a.openwrtVersion,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		Capabilities:   supportedCapabilities,
 	}
 
 	payload, err := json.Marshal(info)
