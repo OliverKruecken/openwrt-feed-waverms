@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -795,4 +796,56 @@ func TestHandleCommand_FileWrite_NoMode_Defaults0600(t *testing.T) {
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_FileWrite_DropbearFormat_DecodesBase64(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	// A small binary blob that is not valid UTF-8.
+	binaryData := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE}
+	encoded := base64.StdEncoding.EncodeToString(binaryData)
+
+	payload := `{
+		"cmd_id": "fw-dropbear",
+		"type": "file_write",
+		"payload": {"path": "/etc/dropbear/dropbear_ed25519_host_key", "content": "` + encoded + `", "format": "dropbear", "mode": "0600"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Agent must have decoded the base64 and written raw bytes.
+	require.Len(t, fw.Calls, 1)
+	assert.Equal(t, "/etc/dropbear/dropbear_ed25519_host_key", fw.Calls[0].Path)
+	assert.Equal(t, binaryData, fw.Calls[0].Content)
+	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-dropbear", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_FileWrite_DropbearFormat_InvalidBase64_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{
+		"cmd_id": "fw-b64err",
+		"type": "file_write",
+		"payload": {"path": "/etc/dropbear/dropbear_ed25519_host_key", "content": "!!!not-valid-base64!!!", "format": "dropbear"}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// WriteFile must not have been called.
+	assert.Empty(t, fw.Calls)
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "fw-b64err", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "base64 decode")
 }

@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -33,9 +34,15 @@ type UCICommandPayload struct {
 }
 
 // FileWriteCommandPayload is the inner payload for type "file_write".
+//
+// Format controls how Content is decoded before writing:
+//   - "openssh" or "" (default): Content is a UTF-8 string, written as-is.
+//   - "dropbear": Content is standard base64 (RFC 4648); the agent decodes it to raw bytes.
+//     Required for native Dropbear binary host key files that are not valid UTF-8.
 type FileWriteCommandPayload struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+	Format  string `json:"format"` // "openssh" (default/absent) | "dropbear" (base64 binary)
 	Mode    string `json:"mode"`
 }
 
@@ -419,7 +426,23 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 				perm = os.FileMode(modeInt)
 			}
 		}
-		if err := a.fileWriter.WriteFile(fwPayload.Path, []byte(fwPayload.Content), perm); err != nil {
+		// Decode content according to format.
+		// "dropbear": content is standard base64 (RFC 4648) for raw binary files.
+		// "openssh" or absent: content is a plain UTF-8 string (backward-compatible default).
+		var fileContent []byte
+		switch fwPayload.Format {
+		case "dropbear":
+			decoded, err := base64.StdEncoding.DecodeString(fwPayload.Content)
+			if err != nil {
+				slog.Error("file_write: base64 decode failed", "cmd_id", cmd.CmdID, "err", err)
+				a.publishAck(cmd.CmdID, "error", fmt.Sprintf("base64 decode: %v", err))
+				return
+			}
+			fileContent = decoded
+		default: // "openssh" or absent — plain text, backward-compatible
+			fileContent = []byte(fwPayload.Content)
+		}
+		if err := a.fileWriter.WriteFile(fwPayload.Path, fileContent, perm); err != nil {
 			slog.Error("file_write failed", "cmd_id", cmd.CmdID, "path", fwPayload.Path, "err", err)
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", fwPayload.Path, err))
 			return
