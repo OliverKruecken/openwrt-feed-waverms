@@ -103,13 +103,63 @@ func (a *Applier) stagePackage(pkgName string, pkgCfg map[string]json.RawMessage
 			}
 		}
 
+		// In merge mode, pre-fetch existing anonymous section IDs so we can
+		// reuse them instead of always appending a new section via Add().
+		// This prevents duplicate anonymous sections (e.g. config system) on
+		// repeated apply calls.
+		var existingAnonIDs []string
+		if mode == "merge" {
+			existingAnonIDs = a.listUnnamedSections(pkgName, sectionType)
+		}
+
+		anonIdx := 0
 		for _, section := range sections {
-			if err := a.applySection(pkgName, sectionType, section, mode); err != nil {
+			reuseID := ""
+			if _, hasName := section[".name"].(string); !hasName {
+				if anonIdx < len(existingAnonIDs) {
+					reuseID = existingAnonIDs[anonIdx]
+				}
+				anonIdx++
+			}
+			if err := a.applySection(pkgName, sectionType, section, mode, reuseID); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// listUnnamedSections returns the @type[index] identifiers for all existing
+// anonymous sections of sectionType in pkgName. Returns nil if the package
+// doesn't exist yet or has no anonymous sections of that type.
+func (a *Applier) listUnnamedSections(pkgName, sectionType string) []string {
+	out, err := a.runner.Show(pkgName)
+	if err != nil {
+		return nil
+	}
+	prefix := pkgName + "."
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(line, prefix)
+		eqIdx := strings.Index(rest, "=")
+		if eqIdx < 0 {
+			continue
+		}
+		sectionID := rest[:eqIdx]
+		typeVal := strings.TrimSpace(rest[eqIdx+1:])
+		// Anonymous sections start with '@'; skip option lines (contain ".").
+		if !strings.HasPrefix(sectionID, "@") || strings.Contains(sectionID, ".") {
+			continue
+		}
+		if typeVal == sectionType {
+			ids = append(ids, sectionID)
+		}
+	}
+	return ids
 }
 
 // deleteUnwantedSections deletes all current sections of sectionType in pkgName that are
@@ -150,7 +200,9 @@ func (a *Applier) deleteUnwantedSections(pkgName, sectionType string, keepNames 
 }
 
 // applySection stages UCI changes for a single section instance.
-func (a *Applier) applySection(pkgName, sectionType string, section map[string]interface{}, mode string) error {
+// reuseID, when non-empty, is an existing @type[index] identifier that should
+// be updated in place rather than creating a new anonymous section via Add().
+func (a *Applier) applySection(pkgName, sectionType string, section map[string]interface{}, mode string, reuseID string) error {
 	name, hasName := section[".name"].(string)
 
 	var sectionID string
@@ -161,6 +213,9 @@ func (a *Applier) applySection(pkgName, sectionType string, section map[string]i
 		if err := a.runner.SetType(pkgName, sectionID, sectionType); err != nil {
 			return fmt.Errorf("set type %s.%s=%s: %w", pkgName, sectionID, sectionType, err)
 		}
+	} else if reuseID != "" {
+		// Reuse an existing anonymous section instead of appending a new one.
+		sectionID = reuseID
 	} else {
 		id, err := a.runner.Add(pkgName, sectionType)
 		if err != nil {

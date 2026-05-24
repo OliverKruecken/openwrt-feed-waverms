@@ -235,9 +235,62 @@ func TestApply_AnonymousSection_SkipsStaleClean(t *testing.T) {
 	_, err := a.Apply(json.RawMessage(cfg))
 	require.NoError(t, err)
 
-	// cleanStaleOptions must not be called for anonymous sections (no .name).
-	assert.NotContains(t, mock.Calls, "show firewall",
-		"Show must not be called for stale-option cleanup on anonymous sections")
+	// Show IS called in merge mode to list existing anonymous sections, but
+	// cleanStaleOptions must NOT run for anonymous sections – verify no
+	// delete-option calls that would indicate stale-clean ran.
+	for _, c := range mock.Calls {
+		assert.NotContains(t, c, "delete-option",
+			"cleanStaleOptions must not run for anonymous (nameless) sections")
+	}
+}
+
+func TestApply_AnonymousSection_MergeReuseExisting(t *testing.T) {
+	// Device already has @system[0]; applying desired config must update it in
+	// place (no Add call, no duplicate section).
+	mock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"show system": "system.@system[0]=system\nsystem.@system[0].hostname=OpenWrt\nsystem.@system[0].timezone=GMT0\n",
+		},
+	}
+	a := apply.New(mock)
+
+	cfg := `{
+  "system": {
+    ".mode": "merge",
+    "system": [
+      { "hostname": "wrt-test", "timezone": "GMT0" }
+    ]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	// Must reuse @system[0], not add a new section.
+	for _, c := range mock.Calls {
+		assert.NotEqual(t, "add system system", c,
+			"Add must not be called when an existing anonymous section can be reused")
+	}
+	assert.Contains(t, mock.Calls, "set system.@system[0].hostname=wrt-test")
+	assert.Contains(t, mock.Calls, "commit system")
+}
+
+func TestApply_AnonymousSection_MergeAddsWhenNoneExist(t *testing.T) {
+	// No existing anonymous sections → Add() must still be called.
+	mock := &uci.MockUCIRunner{}
+	a := apply.New(mock)
+
+	cfg := `{
+  "system": {
+    ".mode": "merge",
+    "system": [
+      { "hostname": "wrt-test" }
+    ]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	assert.Contains(t, mock.Calls, "add system system")
 }
 
 func TestRunReloads_SkipsDisabledService(t *testing.T) {
