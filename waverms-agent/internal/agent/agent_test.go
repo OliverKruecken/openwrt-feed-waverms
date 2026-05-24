@@ -101,13 +101,19 @@ func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T
 	fw := &filewriter.MockFileWriter{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
+	// Values are standard base64 (RFC 4648); encoding/json decodes []byte automatically.
+	// "-----BEGIN OPENSSH PRIVATE KEY-----\nfake_ed25519\n"
+	const privKeyB64 = "LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KZmFrZV9lZDI1NTE5Cg=="
+	// "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"
+	const pubKeyB64 = "c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBIGZha2U="
+
 	payload := `{
 		"cmd_id": "hkr-1",
 		"type": "host_key_restore",
 		"payload": {
 			"keys": {
-				"ssh_host_ed25519_key":     "-----BEGIN OPENSSH PRIVATE KEY-----\nfake_ed25519\n",
-				"ssh_host_ed25519_key.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"
+				"ssh_host_ed25519_key":     "` + privKeyB64 + `",
+				"ssh_host_ed25519_key.pub": "` + pubKeyB64 + `"
 			}
 		}
 	}`
@@ -115,13 +121,16 @@ func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
 	// Both key files must have been written under /etc/dropbear/
-	paths := make(map[string]bool)
+	contents := make(map[string][]byte)
 	for _, c := range fw.Calls {
-		paths[c.Path] = true
+		contents[c.Path] = c.Content
 		assert.Equal(t, os.FileMode(0600), c.Perm, "host key files must have mode 0600")
 	}
-	assert.True(t, paths["/etc/dropbear/ssh_host_ed25519_key"], "private key must be written")
-	assert.True(t, paths["/etc/dropbear/ssh_host_ed25519_key.pub"], "public key must be written")
+	require.Contains(t, contents, "/etc/dropbear/ssh_host_ed25519_key", "private key must be written")
+	require.Contains(t, contents, "/etc/dropbear/ssh_host_ed25519_key.pub", "public key must be written")
+	// Content written to disk must be the decoded bytes, not the base64 string.
+	assert.Equal(t, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nfake_ed25519\n"), contents["/etc/dropbear/ssh_host_ed25519_key"])
+	assert.Equal(t, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"), contents["/etc/dropbear/ssh_host_ed25519_key.pub"])
 
 	// Dropbear must have been restarted
 	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/dropbear restart")
@@ -141,12 +150,13 @@ func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	// A key with a path-traversal filename must be stripped to its basename.
+	// "evil content" base64-encoded
 	payload := `{
 		"cmd_id": "hkr-traverse",
 		"type": "host_key_restore",
 		"payload": {
 			"keys": {
-				"../../etc/passwd": "evil content"
+				"../../etc/passwd": "ZXZpbCBjb250ZW50"
 			}
 		}
 	}`
@@ -156,6 +166,7 @@ func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 	// File must be written as /etc/dropbear/passwd, not /etc/passwd.
 	require.Len(t, fw.Calls, 1)
 	assert.Equal(t, "/etc/dropbear/passwd", fw.Calls[0].Path)
+	assert.Equal(t, []byte("evil content"), fw.Calls[0].Content)
 }
 
 func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {
@@ -168,11 +179,12 @@ func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {
 	}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
+	// "content" base64-encoded
 	payload := `{
 		"cmd_id": "hkr-err",
 		"type": "host_key_restore",
 		"payload": {
-			"keys": {"ssh_host_ed25519_key": "content"}
+			"keys": {"ssh_host_ed25519_key": "Y29udGVudA=="}
 		}
 	}`
 
@@ -207,10 +219,11 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 	fw := &filewriter.MockFileWriter{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
+	// "content" base64-encoded
 	payload := `{
 		"cmd_id": "hkr-restart-fail",
 		"type": "host_key_restore",
-		"payload": {"keys": {"ssh_host_ed25519_key": "content"}}
+		"payload": {"keys": {"ssh_host_ed25519_key": "Y29udGVudA=="}}
 	}`
 
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))

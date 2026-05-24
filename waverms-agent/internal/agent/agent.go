@@ -47,10 +47,12 @@ type FileWriteCommandPayload struct {
 }
 
 // HostKeyRestorePayload is the inner payload for type "host_key_restore".
-// Keys maps each filename (e.g. "ssh_host_ed25519_key") to its file content.
+// Keys maps each filename (e.g. "dropbear_ed25519_host_key") to its raw file content.
+// Values are base64-encoded in the JSON payload (RFC 4648); encoding/json decodes them
+// automatically into []byte so they can be written as binary to disk.
 // All files are written under /etc/dropbear/ with mode 0600.
 type HostKeyRestorePayload struct {
-	Keys map[string]string `json:"keys"`
+	Keys map[string][]byte `json:"keys"`
 }
 
 // StateRequestPayload is received on device/{id}/state/request.
@@ -466,7 +468,7 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			// filepath.Base guards against path-traversal in the filename key.
 			safe := filepath.Base(name)
 			path := "/etc/dropbear/" + safe
-			if err := a.fileWriter.WriteFile(path, []byte(content), 0600); err != nil {
+			if err := a.fileWriter.WriteFile(path, content, 0600); err != nil {
 				slog.Error("host_key_restore: write failed", "cmd_id", cmd.CmdID, "file", safe, "err", err)
 				a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", safe, err))
 				return
