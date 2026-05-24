@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,6 +37,13 @@ type FileWriteCommandPayload struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 	Mode    string `json:"mode"`
+}
+
+// HostKeyRestorePayload is the inner payload for type "host_key_restore".
+// Keys maps each filename (e.g. "ssh_host_ed25519_key") to its file content.
+// All files are written under /etc/dropbear/ with mode 0600.
+type HostKeyRestorePayload struct {
+	Keys map[string]string `json:"keys"`
 }
 
 // StateRequestPayload is received on device/{id}/state/request.
@@ -77,6 +85,7 @@ var supportedCapabilities = []string{
 	"config_apply",
 	"file_write",
 	"state_report",
+	"host_key_restore",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -416,6 +425,37 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			return
 		}
 		slog.Info("file_write succeeded", "cmd_id", cmd.CmdID, "path", fwPayload.Path)
+		a.publishAck(cmd.CmdID, "ok", "")
+		return
+
+	case "host_key_restore":
+		var hkPayload HostKeyRestorePayload
+		if err := json.Unmarshal(cmd.Payload, &hkPayload); err != nil {
+			slog.Error("invalid host_key_restore payload", "cmd_id", cmd.CmdID, "err", err)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+			return
+		}
+		if len(hkPayload.Keys) == 0 {
+			a.publishAck(cmd.CmdID, "error", "keys map is empty")
+			return
+		}
+		for name, content := range hkPayload.Keys {
+			// filepath.Base guards against path-traversal in the filename key.
+			safe := filepath.Base(name)
+			path := "/etc/dropbear/" + safe
+			if err := a.fileWriter.WriteFile(path, []byte(content), 0600); err != nil {
+				slog.Error("host_key_restore: write failed", "cmd_id", cmd.CmdID, "file", safe, "err", err)
+				a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", safe, err))
+				return
+			}
+			slog.Debug("host_key_restore: wrote key file", "file", safe)
+		}
+		// Restart Dropbear so it picks up the restored keys.
+		if _, err := a.uci.ExecRaw("/etc/init.d/dropbear", "restart"); err != nil {
+			// Non-fatal: keys are already on disk; dropbear will use them on next connection.
+			slog.Warn("host_key_restore: dropbear restart failed (non-fatal)", "cmd_id", cmd.CmdID, "err", err)
+		}
+		slog.Info("host_key_restore succeeded", "cmd_id", cmd.CmdID, "files", len(hkPayload.Keys))
 		a.publishAck(cmd.CmdID, "ok", "")
 		return
 

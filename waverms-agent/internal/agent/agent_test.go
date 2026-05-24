@@ -91,6 +91,134 @@ func TestPublishInfo_CapabilitiesContainExpectedTypes(t *testing.T) {
 	assert.Contains(t, info.Capabilities, "config_apply")
 	assert.Contains(t, info.Capabilities, "file_write")
 	assert.Contains(t, info.Capabilities, "state_report")
+	assert.Contains(t, info.Capabilities, "host_key_restore")
+}
+
+func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{
+		"cmd_id": "hkr-1",
+		"type": "host_key_restore",
+		"payload": {
+			"keys": {
+				"ssh_host_ed25519_key":     "-----BEGIN OPENSSH PRIVATE KEY-----\nfake_ed25519\n",
+				"ssh_host_ed25519_key.pub": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"
+			}
+		}
+	}`
+
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Both key files must have been written under /etc/dropbear/
+	paths := make(map[string]bool)
+	for _, c := range fw.Calls {
+		paths[c.Path] = true
+		assert.Equal(t, os.FileMode(0600), c.Perm, "host key files must have mode 0600")
+	}
+	assert.True(t, paths["/etc/dropbear/ssh_host_ed25519_key"], "private key must be written")
+	assert.True(t, paths["/etc/dropbear/ssh_host_ed25519_key.pub"], "public key must be written")
+
+	// Dropbear must have been restarted
+	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/dropbear restart")
+
+	// Ack must be "ok"
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "hkr-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	// A key with a path-traversal filename must be stripped to its basename.
+	payload := `{
+		"cmd_id": "hkr-traverse",
+		"type": "host_key_restore",
+		"payload": {
+			"keys": {
+				"../../etc/passwd": "evil content"
+			}
+		}
+	}`
+
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// File must be written as /etc/dropbear/passwd, not /etc/passwd.
+	require.Len(t, fw.Calls, 1)
+	assert.Equal(t, "/etc/dropbear/passwd", fw.Calls[0].Path)
+}
+
+func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{
+		Errors: map[string]error{
+			"/etc/dropbear/ssh_host_ed25519_key": errors.New("disk full"),
+		},
+	}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{
+		"cmd_id": "hkr-err",
+		"type": "host_key_restore",
+		"payload": {
+			"keys": {"ssh_host_ed25519_key": "content"}
+		}
+	}`
+
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRestore_EmptyKeys_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	payload := `{"cmd_id": "hkr-empty", "type": "host_key_restore", "payload": {"keys": {}}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"raw /etc/init.d/dropbear restart": errors.New("service not found"),
+		},
+	}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{
+		"cmd_id": "hkr-restart-fail",
+		"type": "host_key_restore",
+		"payload": {"keys": {"ssh_host_ed25519_key": "content"}}
+	}`
+
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Dropbear restart failure is non-fatal — ack must still be "ok"
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
 }
 
 func TestHandleCommand_UCISet_ExecutesAndAcks(t *testing.T) {
