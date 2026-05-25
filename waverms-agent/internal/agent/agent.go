@@ -87,6 +87,21 @@ type InfoPayload struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
+// allowedUCISubcmds is the set of UCI subcommands that uci_set is permitted to
+// execute. Only these safe, non-destructive subcommands are accepted; anything
+// else (e.g. "batch", "import") is rejected to prevent command injection if the
+// MQTT broker is compromised or a message is replayed.
+var allowedUCISubcmds = map[string]bool{
+	"set":      true,
+	"commit":   true,
+	"revert":   true,
+	"delete":   true,
+	"add":      true,
+	"add_list": true,
+	"del_list": true,
+	"get":      true,
+}
+
 // fileWriteAllowedDirs is the directory allowlist for the file_write command.
 // Only paths whose filepath.Clean result begins with one of these prefixes are
 // accepted. This prevents a compromised or replayed MQTT message from overwriting
@@ -397,6 +412,15 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			// Strip leading "uci " prefix if present.
 			args := strings.Fields(strings.TrimPrefix(rawCmd, "uci "))
 			if len(args) == 0 {
+				continue
+			}
+			// Allowlist the subcommand to prevent injection of destructive
+			// UCI operations (e.g. "batch", "import") if the broker is
+			// compromised or a message is replayed.
+			if !allowedUCISubcmds[args[0]] {
+				slog.Error("uci_set rejected: subcommand not in allowlist", "cmd_id", cmd.CmdID, "subcommand", args[0])
+				output.WriteString(fmt.Sprintf("error: uci subcommand not permitted: %s\n", args[0]))
+				status = "error"
 				continue
 			}
 			slog.Debug("uci exec", "args", args)

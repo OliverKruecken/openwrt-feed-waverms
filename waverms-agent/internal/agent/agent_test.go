@@ -401,6 +401,53 @@ func TestReadUptimeSeconds_ReturnsNonNegative(t *testing.T) {
 	assert.GreaterOrEqual(t, u, int64(0))
 }
 
+func TestHandleCommand_UCISet_BlockedSubcommand_AcksError(t *testing.T) {
+	blocked := []string{"batch", "import", "export", "changes", "show", "help"}
+	for _, sub := range blocked {
+		t.Run(sub, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			uciMock := &uci.MockUCIRunner{}
+			a := newTestAgent(mock, uciMock)
+
+			payload := `{"cmd_id":"uci-block","type":"uci_set","payload":{"commands":["` + sub + ` system"]}}`
+			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+			// UCI runner must NOT have been called.
+			assert.Empty(t, uciMock.Calls, "ExecRaw must not be called for blocked subcommand %q", sub)
+
+			// Ack must be "error".
+			require.Len(t, mock.Published, 1)
+			var ack AckPayload
+			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+			assert.Equal(t, "error", ack.Status)
+			assert.Contains(t, ack.Output, "not permitted")
+		})
+	}
+}
+
+func TestHandleCommand_UCISet_AllowedSubcommands_AreExecuted(t *testing.T) {
+	allowed := []string{"set", "commit", "revert", "delete", "add", "add_list", "del_list", "get"}
+	for _, sub := range allowed {
+		t.Run(sub, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			uciMock := &uci.MockUCIRunner{}
+			a := newTestAgent(mock, uciMock)
+
+			// Use "uci <sub> system" for each allowed subcommand.
+			payload := `{"cmd_id":"uci-allow","type":"uci_set","payload":{"commands":["uci ` + sub + ` system"]}}`
+			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+			// ExecRaw must have been called with the subcommand.
+			assert.Contains(t, uciMock.Calls, "raw "+sub+" system")
+
+			require.Len(t, mock.Published, 1)
+			var ack AckPayload
+			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+			assert.Equal(t, "ok", ack.Status)
+		})
+	}
+}
+
 func TestHandleCommand_StripUCIPrefix(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
