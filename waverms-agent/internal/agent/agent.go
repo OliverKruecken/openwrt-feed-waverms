@@ -270,11 +270,21 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	delay := time.Second
 	maxDelay := 300 * time.Second
+	// A session that stays connected longer than this threshold is considered
+	// healthy; on disconnect the backoff resets so the next reconnect is fast.
+	const sessionHealthyThreshold = 30 * time.Second
 
 	for {
+		sessionStart := time.Now()
 		err := a.runSession(ctx)
 		if ctx.Err() != nil {
 			return nil
+		}
+		// Reset the backoff delay when the session ran long enough to be
+		// considered stable. Without this, a device that reconnects after days
+		// of uptime would wait up to 300 s before its first reconnect attempt.
+		if time.Since(sessionStart) >= sessionHealthyThreshold {
+			delay = time.Second
 		}
 		slog.Info("session ended, reconnecting", "err", err, "delay", delay)
 		select {
