@@ -95,3 +95,51 @@ func TestMockMQTTClient_ConnectErr(t *testing.T) {
 	err := m.Connect(context.Background(), ConnectOptions{})
 	assert.ErrorIs(t, err, assert.AnError)
 }
+
+func TestMockMQTTClient_SubscribeErr(t *testing.T) {
+	m := NewMockMQTTClient()
+	m.SetSubscribeErr(assert.AnError)
+	err := m.Subscribe(context.Background(), "t/1", 1, func(string, []byte) {})
+	assert.ErrorIs(t, err, assert.AnError)
+	// Handler must not have been registered.
+	assert.NotContains(t, m.Subscriptions, "t/1")
+}
+
+func TestMockMQTTClient_DisconnectCount(t *testing.T) {
+	m := NewMockMQTTClient()
+	assert.Equal(t, 0, m.DisconnectCount())
+	m.Disconnect()
+	assert.Equal(t, 1, m.DisconnectCount())
+	m.Disconnect()
+	assert.Equal(t, 2, m.DisconnectCount())
+}
+
+// --- PahoClient unit tests (no broker required) ---
+
+func TestPahoClient_PublishBeforeConnect_ReturnsError(t *testing.T) {
+	c := NewPahoClient(nil)
+	err := c.Publish(context.Background(), "t/1", []byte("hello"), 1, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not connected")
+}
+
+func TestPahoClient_SubscribeBeforeConnect_ReturnsError(t *testing.T) {
+	c := NewPahoClient(nil)
+	err := c.Subscribe(context.Background(), "t/1", 1, func(string, []byte) {})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not connected")
+}
+
+func TestPahoClient_DisconnectBeforeConnect_IsNoop(t *testing.T) {
+	c := NewPahoClient(nil)
+	// Must not panic when client field is nil.
+	assert.NotPanics(t, func() { c.Disconnect() })
+}
+
+func TestPahoClient_DisconnectedBeforeConnect_ReturnsNilChannel(t *testing.T) {
+	c := NewPahoClient(nil)
+	// disconnCh is nil until the first Connect; callers must not select on it
+	// before connecting — this test documents current behaviour.
+	ch := c.Disconnected()
+	assert.Nil(t, ch, "Disconnected() returns nil before Connect is called")
+}
