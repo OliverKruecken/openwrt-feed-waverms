@@ -1,6 +1,8 @@
 # WaveRMS agent configuration
-# Override BROKER_HOST with the image builder files/ overlay per batch.
-BROKER_HOST=mosquitto.moortwiete.de
+# BROKER_HOST must be set per production batch via the image builder files/ overlay.
+# Leaving it empty causes the agent to fail at startup with a clear error message,
+# preventing devices from accidentally connecting to the wrong broker.
+BROKER_HOST=
 BROKER_PORT=8883
 TLS_INSECURE=false
 HEARTBEAT_INTERVAL=60

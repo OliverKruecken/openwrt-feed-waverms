@@ -47,6 +47,13 @@ func main() {
 	}
 	cfg.AgentVersion = Version
 
+	// BROKER_HOST is mandatory. An empty value means the image builder overlay
+	// was not applied for this batch. Fail fast with a clear message rather than
+	// silently connecting to an empty host and entering a confusing reconnect loop.
+	if cfg.BrokerHost == "" {
+		log.Fatalf("config: BROKER_HOST is not set — set it in /etc/waverms/config or via the image builder files/ overlay")
+	}
+
 	logLevel := slog.LevelInfo
 	if cfg.Debug {
 		logLevel = slog.LevelDebug
