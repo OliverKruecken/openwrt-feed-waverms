@@ -68,7 +68,7 @@ func main() {
 
 	mac, err := hardware.GetFirstPhysicalMAC()
 	if err != nil {
-		log.Printf("warning: cannot determine MAC address: %v", err)
+		slog.Warn("cannot determine MAC address", "err", err)
 	}
 
 	var tlsCfg *tls.Config
