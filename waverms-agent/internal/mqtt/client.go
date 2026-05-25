@@ -224,12 +224,14 @@ type PublishedMsg struct {
 
 // MockMQTTClient is a test double that records all interactions.
 type MockMQTTClient struct {
-	mu            sync.Mutex
-	ConnectOpts   []ConnectOptions
-	Published     []PublishedMsg
-	Subscriptions map[string]MessageHandler
-	disconnCh     chan struct{}
-	connectErr    error
+	mu             sync.Mutex
+	ConnectOpts    []ConnectOptions
+	Published      []PublishedMsg
+	Subscriptions  map[string]MessageHandler
+	disconnCh      chan struct{}
+	connectErr     error
+	subscribeErr   error // returned by every Subscribe call when set
+	disconnectCnt  int  // incremented by every Disconnect call
 }
 
 // NewMockMQTTClient creates a ready-to-use mock.
@@ -272,14 +274,35 @@ func (m *MockMQTTClient) Publish(_ context.Context, topic string, payload []byte
 	return nil
 }
 
+// SetSubscribeErr causes every Subscribe call to return err.
+func (m *MockMQTTClient) SetSubscribeErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.subscribeErr = err
+}
+
 func (m *MockMQTTClient) Subscribe(_ context.Context, topic string, _ byte, handler MessageHandler) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.subscribeErr != nil {
+		return m.subscribeErr
+	}
 	m.Subscriptions[topic] = handler
 	return nil
 }
 
-func (m *MockMQTTClient) Disconnect() {}
+// DisconnectCount returns the number of times Disconnect has been called.
+func (m *MockMQTTClient) DisconnectCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disconnectCnt
+}
+
+func (m *MockMQTTClient) Disconnect() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.disconnectCnt++
+}
 
 func (m *MockMQTTClient) Disconnected() <-chan struct{} {
 	m.mu.Lock()

@@ -308,6 +308,19 @@ func TestHandleCommand_InvalidJSON_NoPanic(t *testing.T) {
 	assert.Empty(t, mock.Published)
 }
 
+func TestRunSession_DisconnectsWhenSubscribeFails(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	mock.SetSubscribeErr(errors.New("broker refused subscribe"))
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.runSession(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subscribe")
+
+	// Disconnect must have been called to release the TCP fd.
+	assert.Equal(t, 1, mock.DisconnectCount(), "Disconnect must be called when Subscribe fails")
+}
+
 func TestRunSession_SetsLWTOnConnect(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	a := newTestAgent(mock, &uci.MockUCIRunner{})

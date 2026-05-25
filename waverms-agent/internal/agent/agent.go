@@ -323,20 +323,30 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 	slog.Debug("connected", "client_id", a.creds.DeviceID)
 
+	// subscribeOrDisconnect subscribes and disconnects (releasing the TCP fd)
+	// if the subscription fails, so that the next reconnect attempt starts clean.
+	subscribeOrDisconnect := func(topic string, qos byte, handler mqttclient.MessageHandler) error {
+		if err := a.mqtt.Subscribe(ctx, topic, qos, handler); err != nil {
+			a.mqtt.Disconnect()
+			return err
+		}
+		return nil
+	}
+
 	cmdTopic := mqttclient.TopicCommand(a.creds.DeviceID)
-	if err := a.mqtt.Subscribe(ctx, cmdTopic, 1, a.handleCommand); err != nil {
+	if err := subscribeOrDisconnect(cmdTopic, 1, a.handleCommand); err != nil {
 		return fmt.Errorf("subscribe cmd: %w", err)
 	}
 	slog.Debug("subscribed", "topic", cmdTopic)
 
 	stateReqTopic := mqttclient.TopicStateRequest(a.creds.DeviceID)
-	if err := a.mqtt.Subscribe(ctx, stateReqTopic, 1, a.handleStateRequest); err != nil {
+	if err := subscribeOrDisconnect(stateReqTopic, 1, a.handleStateRequest); err != nil {
 		return fmt.Errorf("subscribe state/request: %w", err)
 	}
 	slog.Debug("subscribed", "topic", stateReqTopic)
 
 	controlTopic := mqttclient.TopicDebugControl(a.creds.DeviceID)
-	if err := a.mqtt.Subscribe(ctx, controlTopic, 1, a.handleDebugControl); err != nil {
+	if err := subscribeOrDisconnect(controlTopic, 1, a.handleDebugControl); err != nil {
 		return fmt.Errorf("subscribe debug/control: %w", err)
 	}
 	slog.Debug("subscribed", "topic", controlTopic)
