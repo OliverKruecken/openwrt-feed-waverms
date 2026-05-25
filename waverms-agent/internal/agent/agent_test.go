@@ -149,8 +149,9 @@ func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 	fw := &filewriter.MockFileWriter{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
-	// A key with a path-traversal filename must be stripped to its basename.
-	// "evil content" base64-encoded
+	// A path-traversal key resolves to "passwd" after filepath.Base().
+	// "passwd" is not in the allowedHostKeyFilenames allowlist, so the
+	// command must be rejected — WriteFile must NOT be called at all.
 	payload := `{
 		"cmd_id": "hkr-traverse",
 		"type": "host_key_restore",
@@ -163,10 +164,43 @@ func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	// File must be written as /etc/dropbear/passwd, not /etc/passwd.
-	require.Len(t, fw.Calls, 1)
-	assert.Equal(t, "/etc/dropbear/passwd", fw.Calls[0].Path)
-	assert.Equal(t, []byte("evil content"), fw.Calls[0].Content)
+	// WriteFile must NOT be called — the filename is not in the allowlist.
+	assert.Empty(t, fw.Calls, "WriteFile must not be called for disallowed filename")
+
+	// Ack must be an error.
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "not permitted")
+}
+
+func TestHandleCommand_HostKeyRestore_DisallowedFilename_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	disallowed := []string{"authorized_keys", ".profile", "known_hosts", "passwd", "shadow"}
+	for _, fname := range disallowed {
+		t.Run(fname, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			fw := &filewriter.MockFileWriter{}
+			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+			payload := `{"cmd_id":"hkr-deny","type":"host_key_restore","payload":{"keys":{"` + fname + `":"Y29udGVudA=="}}}`
+			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+			assert.Empty(t, fw.Calls, "WriteFile must not be called for disallowed filename %q", fname)
+			require.Len(t, mock.Published, 1)
+			var ack AckPayload
+			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+			assert.Equal(t, "error", ack.Status)
+		})
+	}
+
+	_ = mock
+	_ = fw
+	_ = a
 }
 
 func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {

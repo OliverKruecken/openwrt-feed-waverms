@@ -102,6 +102,22 @@ var allowedUCISubcmds = map[string]bool{
 	"get":      true,
 }
 
+// allowedHostKeyFilenames is the set of filenames that host_key_restore is
+// permitted to write under /etc/dropbear/. filepath.Base() strips directory
+// components, but without this allowlist an attacker could still write to
+// symlink targets inside /etc/dropbear/ or create unexpected files such as
+// authorized_keys or .profile.
+var allowedHostKeyFilenames = map[string]bool{
+	"dropbear_ed25519_host_key":     true,
+	"dropbear_rsa_host_key":         true,
+	"dropbear_ed25519_host_key.pub": true,
+	"dropbear_rsa_host_key.pub":     true,
+	"ssh_host_ed25519_key":          true,
+	"ssh_host_rsa_key":              true,
+	"ssh_host_ed25519_key.pub":      true,
+	"ssh_host_rsa_key.pub":          true,
+}
+
 // fileWriteAllowedDirs is the directory allowlist for the file_write command.
 // Only paths whose filepath.Clean result begins with one of these prefixes are
 // accepted. This prevents a compromised or replayed MQTT message from overwriting
@@ -543,8 +559,16 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			return
 		}
 		for name, content := range hkPayload.Keys {
-			// filepath.Base guards against path-traversal in the filename key.
+			// filepath.Base strips directory components to prevent path traversal.
 			safe := filepath.Base(name)
+			// Allowlist check: only known host-key filenames are accepted.
+			// This prevents writes to symlink targets, authorized_keys, or
+			// other sensitive files that might exist under /etc/dropbear/.
+			if !allowedHostKeyFilenames[safe] {
+				slog.Error("host_key_restore: filename not in allowlist", "cmd_id", cmd.CmdID, "file", safe)
+				a.publishAck(cmd.CmdID, "error", fmt.Sprintf("filename not permitted: %s", safe))
+				return
+			}
 			path := "/etc/dropbear/" + safe
 			if err := a.fileWriter.WriteFile(path, content, 0600); err != nil {
 				slog.Error("host_key_restore: write failed", "cmd_id", cmd.CmdID, "file", safe, "err", err)
