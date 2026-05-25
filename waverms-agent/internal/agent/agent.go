@@ -240,6 +240,11 @@ func (a *Agent) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("bootstrap failed: %w", err)
 		}
+		// Bootstrap uses the shared MQTT client for its temporary connection.
+		// Disconnect it explicitly now so the TCP socket is released before
+		// runSession opens a new session with the permanent device credentials.
+		a.mqtt.Disconnect()
+
 		// Reload credentials from the just-written file.
 		creds, err := config.LoadCredentials(a.credsPath)
 		if err != nil {
