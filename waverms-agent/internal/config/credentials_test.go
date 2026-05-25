@@ -71,6 +71,22 @@ func TestLoadCredentials_MissingFile_ReturnsEmpty(t *testing.T) {
 	assert.False(t, creds.HasCredentials())
 }
 
+func TestLoadCredentials_SecretWithHashNotTruncated(t *testing.T) {
+	// A SECRET value containing " #" must be loaded verbatim.
+	// Previously the inline-comment stripper silently truncated such values,
+	// causing MQTT authentication failures that were impossible to diagnose.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials")
+
+	content := "DEVICE_ID=mydevice\nSECRET=abc #notacomment xyz\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+
+	creds, err := LoadCredentials(path)
+	require.NoError(t, err)
+	assert.Equal(t, "abc #notacomment xyz", creds.Secret,
+		"SECRET containing ' #' must not be truncated")
+}
+
 func TestSaveCredentials_NoTempFileLeft(t *testing.T) {
 	// SaveCredentials must not leave any .credentials-*.tmp file after success.
 	dir := t.TempDir()

@@ -48,10 +48,10 @@ func LoadCredentials(path string) (*Credentials, error) {
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
-		// strip inline comment
-		if idx := strings.Index(value, " #"); idx >= 0 {
-			value = strings.TrimSpace(value[:idx])
-		}
+		// Do NOT strip inline comments here. Credentials are machine-written by
+		// SaveCredentials and never contain comments. Stripping " #" would silently
+		// truncate a SECRET or DEVICE_ID that happens to contain that byte sequence,
+		// causing MQTT authentication failures with no obvious error message.
 
 		switch key {
 		case "DEVICE_ID":
