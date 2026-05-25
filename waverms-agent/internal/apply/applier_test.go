@@ -2,6 +2,7 @@ package apply_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/OliverKruecken/waverms-agent/internal/apply"
@@ -241,6 +242,47 @@ func TestApply_Phase2CommitError_RevertsAllRemainingWhenFirstFails(t *testing.T)
 	assert.Contains(t, mock.Calls, "revert dhcp")
 	assert.Contains(t, mock.Calls, "revert network")
 	assert.Contains(t, mock.Calls, "revert system")
+}
+
+func TestApply_SectionTypesAppliedInDeterministicOrder(t *testing.T) {
+	// A package with two section types must always stage them in sorted
+	// (alphabetical) order, regardless of JSON key insertion order.
+	// We run Apply 10 times and verify the UCI call sequence is identical
+	// every time — a random map iteration would produce different orderings.
+	const cfg = `{
+  "firewall": {
+    ".mode": "merge",
+    "rule":      [{ ".name": "ssh",  "dest_port": "22" }],
+    "redirect":  [{ ".name": "nat1", "dest_port": "80" }]
+  }
+}`
+	var firstRun []string
+	for i := 0; i < 10; i++ {
+		mock := &uci.MockUCIRunner{}
+		a := apply.New(mock)
+		_, err := a.Apply(json.RawMessage(cfg))
+		require.NoError(t, err)
+
+		if i == 0 {
+			firstRun = mock.Calls
+		} else {
+			assert.Equal(t, firstRun, mock.Calls,
+				"UCI call order must be identical across Apply invocations (run %d differs)", i+1)
+		}
+	}
+
+	// Additionally verify "redirect" (r) comes before "rule" (ru) — sorted order.
+	redirectIdx, ruleIdx := -1, -1
+	for j, c := range firstRun {
+		if strings.Contains(c, "nat1") {
+			redirectIdx = j
+		}
+		if strings.Contains(c, "ssh") {
+			ruleIdx = j
+		}
+	}
+	assert.Less(t, redirectIdx, ruleIdx,
+		"'redirect' section type (r) must be staged before 'rule' (ru) in alphabetical order")
 }
 
 func TestApply_EmptyConfig_ReturnsNoPackages(t *testing.T) {

@@ -88,10 +88,20 @@ func (a *Applier) stagePackage(pkgName string, pkgCfg map[string]json.RawMessage
 		_ = json.Unmarshal(v, &mode)
 	}
 
-	for sectionType, sectionsJSON := range pkgCfg {
-		if strings.HasPrefix(sectionType, ".") {
-			continue
+	// Collect and sort section-type keys for deterministic ordering.
+	// Firewall rules, DHCP pools, and other order-sensitive UCI sections
+	// must be staged in the same sequence on every apply call; a random
+	// map iteration order would otherwise produce different device configs.
+	sectionTypes := make([]string, 0, len(pkgCfg))
+	for k := range pkgCfg {
+		if !strings.HasPrefix(k, ".") {
+			sectionTypes = append(sectionTypes, k)
 		}
+	}
+	sort.Strings(sectionTypes)
+
+	for _, sectionType := range sectionTypes {
+		sectionsJSON := pkgCfg[sectionType]
 		sections, err := parseSections(sectionsJSON)
 		if err != nil {
 			return fmt.Errorf("parse sections for type %q: %w", sectionType, err)
