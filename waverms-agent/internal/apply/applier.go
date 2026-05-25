@@ -64,9 +64,16 @@ func (a *Applier) Apply(payload json.RawMessage) ([]string, error) {
 	}
 
 	// Phase 2: commit each staged package.
+	// On commit failure, revert this package and all remaining uncommitted
+	// packages to prevent leaving the UCI transaction cache in a mixed state
+	// (some packages committed, others still staged with unapplied changes).
 	committed := make([]string, 0, len(staged))
-	for _, pkg := range staged {
+	for i, pkg := range staged {
 		if err := a.runner.Commit(pkg); err != nil {
+			_ = a.runner.Revert(pkg)
+			for _, remaining := range staged[i+1:] {
+				_ = a.runner.Revert(remaining)
+			}
 			return committed, fmt.Errorf("commit %s: %w", pkg, err)
 		}
 		committed = append(committed, pkg)

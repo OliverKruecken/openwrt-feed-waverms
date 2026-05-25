@@ -184,6 +184,65 @@ func TestApply_MultiplePackages_ReturnsAllCommitted(t *testing.T) {
 	assert.ElementsMatch(t, []string{"system", "network"}, committed)
 }
 
+func TestApply_Phase2CommitError_RevertsRemainingPackages(t *testing.T) {
+	// Two-package apply (network < system alphabetically).
+	// network commits first; system commit fails.
+	// system must be reverted; network (already committed) must NOT be reverted.
+	mock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"commit system": assert.AnError,
+		},
+	}
+	a := apply.New(mock)
+
+	cfg := `{
+  "system": {
+    ".mode": "merge",
+    "system": [{ ".name": "system", "hostname": "r1" }]
+  },
+  "network": {
+    ".mode": "merge",
+    "interface": [{ ".name": "wan", "proto": "dhcp" }]
+  }
+}`
+	committed, err := a.Apply(json.RawMessage(cfg))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "commit system")
+
+	// network (alphabetically first) committed successfully.
+	assert.Equal(t, []string{"network"}, committed)
+
+	// system must have been reverted after its commit failed.
+	assert.Contains(t, mock.Calls, "revert system")
+
+	// network must NOT be reverted — it was already committed.
+	assert.NotContains(t, mock.Calls, "revert network")
+}
+
+func TestApply_Phase2CommitError_RevertsAllRemainingWhenFirstFails(t *testing.T) {
+	// Three packages; the first commit fails → the other two must be reverted.
+	mock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"commit dhcp": assert.AnError,
+		},
+	}
+	a := apply.New(mock)
+
+	cfg := `{
+  "dhcp":    { ".mode": "merge", "dnsmasq": [{ ".name": "cfg01", "domain": "lan" }] },
+  "network": { ".mode": "merge", "interface": [{ ".name": "wan", "proto": "dhcp" }] },
+  "system":  { ".mode": "merge", "system": [{ ".name": "system", "hostname": "r1" }] }
+}`
+	committed, err := a.Apply(json.RawMessage(cfg))
+	require.Error(t, err)
+	assert.Empty(t, committed)
+
+	// dhcp commit failed — dhcp itself, network, and system must all be reverted.
+	assert.Contains(t, mock.Calls, "revert dhcp")
+	assert.Contains(t, mock.Calls, "revert network")
+	assert.Contains(t, mock.Calls, "revert system")
+}
+
 func TestApply_EmptyConfig_ReturnsNoPackages(t *testing.T) {
 	mock := &uci.MockUCIRunner{}
 	a := apply.New(mock)
