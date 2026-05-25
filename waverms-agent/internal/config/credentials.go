@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -73,7 +74,10 @@ func LoadCredentials(path string) (*Credentials, error) {
 	return creds, nil
 }
 
-// SaveCredentials writes credentials to path (chmod 600).
+// SaveCredentials writes credentials atomically to path (chmod 600).
+// It writes to a temporary file in the same directory and then renames it
+// into place. On Linux, rename(2) is atomic — a power loss during the write
+// cannot leave a truncated credentials file, which would break bootstrap.
 func SaveCredentials(path, deviceID, secret, brokerHost string, brokerPort int) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "DEVICE_ID=%s\n", deviceID)
@@ -85,8 +89,30 @@ func SaveCredentials(path, deviceID, secret, brokerHost string, brokerPort int) 
 		fmt.Fprintf(&b, "BROKER_PORT=%d\n", brokerPort)
 	}
 
-	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
-		return fmt.Errorf("write credentials %s: %w", path, err)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".credentials-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp credentials: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp credentials: %w", err)
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp credentials: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp credentials: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename credentials %s: %w", path, err)
 	}
 	return nil
 }

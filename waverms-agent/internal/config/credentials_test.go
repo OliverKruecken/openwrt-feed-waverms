@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,6 +69,21 @@ func TestLoadCredentials_MissingFile_ReturnsEmpty(t *testing.T) {
 	creds, err := LoadCredentials("/nonexistent/credentials")
 	require.NoError(t, err)
 	assert.False(t, creds.HasCredentials())
+}
+
+func TestSaveCredentials_NoTempFileLeft(t *testing.T) {
+	// SaveCredentials must not leave any .credentials-*.tmp file after success.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials")
+
+	require.NoError(t, SaveCredentials(path, "id", "sec", "", 0))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasSuffix(e.Name(), ".tmp"),
+			"no temp file must remain after a successful save, found: %s", e.Name())
+	}
 }
 
 func TestSaveCredentials_FileMode(t *testing.T) {
