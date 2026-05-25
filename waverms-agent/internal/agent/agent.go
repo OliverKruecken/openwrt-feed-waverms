@@ -87,6 +87,28 @@ type InfoPayload struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
+// fileWriteAllowedDirs is the directory allowlist for the file_write command.
+// Only paths whose filepath.Clean result begins with one of these prefixes are
+// accepted. This prevents a compromised or replayed MQTT message from overwriting
+// arbitrary system files (e.g. /etc/shadow, /usr/bin/waverms-agent).
+var fileWriteAllowedDirs = []string{
+	"/etc/dropbear/",
+	"/etc/waverms/",
+	"/tmp/",
+}
+
+// isFileWritePathAllowed returns true when path, after filepath.Clean, begins
+// with one of the entries in fileWriteAllowedDirs.
+func isFileWritePathAllowed(path string) bool {
+	clean := filepath.Clean(path)
+	for _, prefix := range fileWriteAllowedDirs {
+		if strings.HasPrefix(clean, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // supportedCapabilities is the list of command types this agent version supports.
 // Append to this list whenever a new command type is implemented.
 var supportedCapabilities = []string{
@@ -418,6 +440,13 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 		}
 		if fwPayload.Path == "" {
 			a.publishAck(cmd.CmdID, "error", "path is required")
+			return
+		}
+		// Reject paths outside the allowlist to prevent arbitrary file writes.
+		// filepath.Clean collapses traversal sequences before the prefix check.
+		if !isFileWritePathAllowed(fwPayload.Path) {
+			slog.Error("file_write rejected: path not in allowlist", "cmd_id", cmd.CmdID, "path", fwPayload.Path)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("path not permitted: %s", fwPayload.Path))
 			return
 		}
 		// Parse mode octal string ("0600" → os.FileMode). Default to 0600 if missing or invalid.

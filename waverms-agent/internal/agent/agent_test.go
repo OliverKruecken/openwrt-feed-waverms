@@ -840,6 +840,74 @@ func TestHandleCommand_FileWrite_DropbearFormat_DecodesBase64(t *testing.T) {
 	assert.Equal(t, "ok", ack.Status)
 }
 
+func TestHandleCommand_FileWrite_DisallowedPath_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"root dir", "/etc/shadow"},
+		{"system binary", "/usr/bin/waverms-agent"},
+		{"traversal into etc", "/etc/dropbear/../../shadow"},
+		{"absolute root", "/"},
+		{"passwd", "/etc/passwd"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			fw := &filewriter.MockFileWriter{}
+			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+			payload := `{"cmd_id":"fw-deny","type":"file_write","payload":{"path":"` + tc.path + `","content":"evil"}}`
+			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+			// WriteFile must not have been called.
+			assert.Empty(t, fw.Calls, "WriteFile must not be called for disallowed path %q", tc.path)
+
+			// Ack must be "error".
+			require.Len(t, mock.Published, 1)
+			var ack AckPayload
+			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+			assert.Equal(t, "error", ack.Status)
+			assert.Contains(t, ack.Output, "path not permitted")
+		})
+	}
+
+	// Confirm the allowlist works for valid paths.
+	_ = mock
+	_ = fw
+	_ = a
+}
+
+func TestHandleCommand_FileWrite_AllowedPaths_AreAccepted(t *testing.T) {
+	cases := []string{
+		"/etc/dropbear/authorized_keys",
+		"/etc/dropbear/dropbear_ed25519_host_key",
+		"/etc/waverms/config",
+		"/tmp/test.txt",
+	}
+	for _, path := range cases {
+		t.Run(path, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			fw := &filewriter.MockFileWriter{}
+			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+			payload := `{"cmd_id":"fw-allow","type":"file_write","payload":{"path":"` + path + `","content":"data"}}`
+			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+			require.Len(t, fw.Calls, 1, "WriteFile must be called for allowed path %q", path)
+			require.Len(t, mock.Published, 1)
+			var ack AckPayload
+			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+			assert.Equal(t, "ok", ack.Status)
+		})
+	}
+}
+
 func TestHandleCommand_FileWrite_DropbearFormat_InvalidBase64_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	fw := &filewriter.MockFileWriter{}
