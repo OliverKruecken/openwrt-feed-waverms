@@ -712,9 +712,3 @@ func readUptimeSeconds() int64 {
 	return int64(secs)
 }
 
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
