@@ -489,11 +489,14 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 			slog.Warn("config_apply: service reload failures", "errors", strings.Join(reloadErrs, "; "))
 		}
 		a.publishAck(cmd.CmdID, "ok", "")
+		// Use an explicit cancel() rather than defer inside a switch case.
+		// defer in a case body defers to the enclosing function (handleCommand),
+		// not to the end of the case, which is a subtle maintenance trap.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		if err := a.publishState(ctx, "apply_success", committed); err != nil {
 			slog.Error("publish state after config_apply", "err", err)
 		}
+		cancel()
 		return
 
 	case "file_write":
