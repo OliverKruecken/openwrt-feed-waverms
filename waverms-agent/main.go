@@ -68,7 +68,7 @@ func main() {
 	if cfg.TLSInsecure {
 		tlsCfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	} else {
-		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS12}
+		tlsCfg = &tls.Config{MinVersion: tls.VersionTLS13}
 	}
 
 	a := agent.New(&agent.Options{
