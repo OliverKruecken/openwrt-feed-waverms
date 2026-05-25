@@ -3,9 +3,11 @@
 package uci
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // UCIRunner abstracts the uci CLI so that business logic can be tested
@@ -29,8 +31,15 @@ type UCIRunner interface {
 // RealUCIRunner calls the uci CLI via os/exec.
 type RealUCIRunner struct{}
 
+// uciTimeout is the maximum time a single uci CLI call is allowed to run.
+// A hung uci process would otherwise block the Paho MQTT message-dispatch
+// goroutine permanently, freezing the entire agent.
+const uciTimeout = 30 * time.Second
+
 func run(args ...string) (string, error) {
-	out, err := exec.Command("uci", args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), uciTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "uci", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("uci %s: %w", strings.Join(args, " "), err)
 	}
