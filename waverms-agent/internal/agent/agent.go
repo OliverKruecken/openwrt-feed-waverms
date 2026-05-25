@@ -164,6 +164,12 @@ func discoverPackages() []string {
 	for _, e := range entries {
 		if e.Type().IsRegular() {
 			pkgs = append(pkgs, e.Name())
+		} else if e.Type()&os.ModeSymlink != 0 {
+			// Some OpenWrt setups symlink UCI packages into /etc/config/.
+			// We skip symlinks because os.ReadDir does not follow them and
+			// resolving them safely would require extra stat calls. Log at
+			// debug so operators can spot unexpected symlinks.
+			slog.Debug("discoverPackages: skipping symlink in /etc/config", "name", e.Name())
 		}
 	}
 	if len(pkgs) == 0 {
