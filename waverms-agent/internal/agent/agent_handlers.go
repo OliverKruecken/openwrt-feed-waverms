@@ -135,15 +135,14 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 		a.publishAck(cmd.CmdID, "error", "keys map is empty")
 		return
 	}
+	allowedFilenames := allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name]
 	for name, content := range hkPayload.Keys {
 		// filepath.Base strips directory components to prevent path traversal.
 		safe := filepath.Base(name)
-		// Allowlist check: only known host-key filenames are accepted.
-		// This prevents writes to symlink targets, authorized_keys, or
-		// other sensitive files that might exist under /etc/dropbear/.
-		if !allowedHostKeyFilenames[safe] {
-			slog.Error("host_key_restore: filename not in allowlist", "cmd_id", cmd.CmdID, "file", safe)
-			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("filename not permitted: %s", safe))
+		// Allowlist check: only filenames valid for the detected SSH daemon are accepted.
+		if !allowedFilenames[safe] {
+			slog.Error("host_key_restore: filename not in allowlist", "cmd_id", cmd.CmdID, "file", safe, "daemon", a.sshDaemon.Name)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("filename not permitted for %s: %s", a.sshDaemon.Name, safe))
 			return
 		}
 		path := a.sshDaemon.Dir + safe
@@ -165,7 +164,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 
 func (a *Agent) handleHostKeyRemove(cmd Command) {
 	removed := 0
-	for name := range allowedHostKeyFilenames {
+	for name := range allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name] {
 		path := a.sshDaemon.Dir + name
 		err := os.Remove(path)
 		if err != nil && !os.IsNotExist(err) {

@@ -205,6 +205,34 @@ func TestHandleCommand_HostKeyRestore_DisallowedFilename_AcksError(t *testing.T)
 	_ = a
 }
 
+func TestHandleCommand_HostKeyRestore_OpenSSH_RejectDropbearFilename(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
+	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
+	a := New(&Options{
+		Config:    cfg,
+		Creds:     creds,
+		MAC:       "aa:bb:cc:dd:ee:ff",
+		MQTT:      mock,
+		UCI:       &uci.MockUCIRunner{},
+		FileWriter: fw,
+		Version:   "1.0.0",
+		SSHDaemon: &daemonOpenSSH,
+	})
+
+	// Dropbear-specific filename must be rejected on an OpenSSH device.
+	payload := `{"cmd_id":"hkr-cross","type":"host_key_restore","payload":{"keys":{"dropbear_ed25519_host_key":"Y29udGVudA=="}}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	assert.Empty(t, fw.Calls, "WriteFile must not be called for a Dropbear filename on an OpenSSH device")
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "openssh")
+}
+
 func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}

@@ -121,20 +121,30 @@ var allowedUCISubcmds = map[string]bool{
 	"get":      true,
 }
 
-// allowedHostKeyFilenames is the set of filenames that host_key_restore is
-// permitted to write under /etc/dropbear/. filepath.Base() strips directory
-// components, but without this allowlist an attacker could still write to
-// symlink targets inside /etc/dropbear/ or create unexpected files such as
-// authorized_keys or .profile.
-var allowedHostKeyFilenames = map[string]bool{
-	"dropbear_ed25519_host_key":     true,
-	"dropbear_rsa_host_key":         true,
-	"dropbear_ed25519_host_key.pub": true,
-	"dropbear_rsa_host_key.pub":     true,
-	"ssh_host_ed25519_key":          true,
-	"ssh_host_rsa_key":              true,
-	"ssh_host_ed25519_key.pub":      true,
-	"ssh_host_rsa_key.pub":          true,
+// allowedHostKeyFilenamesByDaemon maps each SSH daemon to the set of host-key
+// filenames it is permitted to write/remove. filepath.Base() strips directory
+// components before the check to prevent path-traversal attacks.
+//
+// Dropbear accepts both its own binary format and OpenSSH PEM format.
+// OpenSSH only uses its own PEM format — accepting Dropbear filenames would
+// write files that OpenSSH ignores, which is misleading and unnecessary.
+var allowedHostKeyFilenamesByDaemon = map[string]map[string]bool{
+	"dropbear": {
+		"dropbear_ed25519_host_key":     true,
+		"dropbear_rsa_host_key":         true,
+		"dropbear_ed25519_host_key.pub": true,
+		"dropbear_rsa_host_key.pub":     true,
+		"ssh_host_ed25519_key":          true,
+		"ssh_host_rsa_key":              true,
+		"ssh_host_ed25519_key.pub":      true,
+		"ssh_host_rsa_key.pub":          true,
+	},
+	"openssh": {
+		"ssh_host_ed25519_key":     true,
+		"ssh_host_rsa_key":         true,
+		"ssh_host_ed25519_key.pub": true,
+		"ssh_host_rsa_key.pub":     true,
+	},
 }
 
 // fileWriteAllowedDirs is the directory allowlist for the file_write command.
