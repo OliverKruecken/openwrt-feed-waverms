@@ -48,9 +48,30 @@ type FileWriteCommandPayload struct {
 // Keys maps each filename (e.g. "dropbear_ed25519_host_key") to its raw file content.
 // Values are base64-encoded in the JSON payload (RFC 4648); encoding/json decodes them
 // automatically into []byte so they can be written as binary to disk.
-// All files are written under /etc/dropbear/ with mode 0600.
+// Files are written to the SSH daemon's key directory (detected at startup) with mode 0600.
 type HostKeyRestorePayload struct {
 	Keys map[string][]byte `json:"keys"`
+}
+
+// sshDaemonInfo describes the SSH daemon running on this device.
+type sshDaemonInfo struct {
+	Name    string // "dropbear" or "openssh"
+	Dir     string // directory where host keys live, e.g. "/etc/dropbear/"
+	Service string // init script path, e.g. "/etc/init.d/dropbear"
+}
+
+var (
+	daemonDropbear = sshDaemonInfo{Name: "dropbear", Dir: "/etc/dropbear/", Service: "/etc/init.d/dropbear"}
+	daemonOpenSSH  = sshDaemonInfo{Name: "openssh", Dir: "/etc/ssh/", Service: "/etc/init.d/sshd"}
+)
+
+// detectSSHDaemon checks which SSH daemon binary is present and returns its
+// sshDaemonInfo. Falls back to Dropbear when neither binary is found.
+func detectSSHDaemon() sshDaemonInfo {
+	if _, err := os.Stat("/usr/sbin/sshd"); err == nil {
+		return daemonOpenSSH
+	}
+	return daemonDropbear
 }
 
 // StateRequestPayload is received on device/{id}/state/request.
@@ -122,6 +143,7 @@ var allowedHostKeyFilenames = map[string]bool{
 // arbitrary system files (e.g. /etc/shadow, /usr/bin/waverms-agent).
 var fileWriteAllowedDirs = []string{
 	"/etc/dropbear/",
+	"/etc/ssh/",
 	"/etc/waverms/",
 	"/tmp/",
 }
@@ -146,6 +168,7 @@ var supportedCapabilities = []string{
 	"file_write",
 	"state_report",
 	"host_key_restore",
+	"host_key_remove",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -194,6 +217,8 @@ type Options struct {
 	BootstrapTokenPath string
 	// CredsPath is where credentials are stored. Defaults to /etc/waverms/credentials.
 	CredsPath string
+	// SSHDaemon overrides the SSH daemon detection (useful in tests). Defaults to detectSSHDaemon().
+	SSHDaemon *sshDaemonInfo
 }
 
 // Agent is the main runtime component.
@@ -207,6 +232,7 @@ type Agent struct {
 	uci            uci.UCIRunner
 	fileWriter     filewriter.FileWriter
 	version        string
+	sshDaemon      sshDaemonInfo
 
 	bootstrapTokenPath string
 	credsPath          string
@@ -230,6 +256,13 @@ func New(opts *Options) *Agent {
 		fw = &filewriter.OSFileWriter{}
 	}
 
+	daemon := daemonDropbear
+	if opts.SSHDaemon != nil {
+		daemon = *opts.SSHDaemon
+	} else {
+		daemon = detectSSHDaemon()
+	}
+
 	a := &Agent{
 		cfg:                opts.Config,
 		creds:              opts.Creds,
@@ -240,6 +273,7 @@ func New(opts *Options) *Agent {
 		uci:                opts.UCI,
 		fileWriter:         fw,
 		version:            opts.Version,
+		sshDaemon:          daemon,
 		bootstrapTokenPath: tokenPath,
 		credsPath:          credsPath,
 	}
@@ -248,6 +282,7 @@ func New(opts *Options) *Agent {
 		"config_apply":     a.handleConfigApply,
 		"file_write":       a.handleFileWrite,
 		"host_key_restore": a.handleHostKeyRestore,
+		"host_key_remove":  a.handleHostKeyRemove,
 	}
 	return a
 }
@@ -422,6 +457,7 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 	uptime := readUptimeSeconds()
 	slog.Debug("publishing heartbeat", "hostname", hostname, "uptime_seconds", uptime)
 
+	caps := append(supportedCapabilities, "ssh_daemon:"+a.sshDaemon.Name)
 	info := InfoPayload{
 		DeviceID:       a.creds.DeviceID,
 		Hostname:       hostname,
@@ -430,7 +466,7 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 		Model:          a.model,
 		OpenWrtVersion: a.openwrtVersion,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		Capabilities:   supportedCapabilities,
+		Capabilities:   caps,
 	}
 
 	payload, err := json.Marshal(info)

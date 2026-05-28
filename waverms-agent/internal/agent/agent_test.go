@@ -36,6 +36,7 @@ func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRun
 		UCI:        uciMock,
 		FileWriter: fw,
 		Version:    "1.0.0",
+		SSHDaemon:  &daemonDropbear,
 	})
 }
 
@@ -268,6 +269,86 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRemove_RemovesFilesAndRestartsService(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{"cmd_id":"hkrem-1","type":"host_key_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// Service must have been restarted.
+	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/dropbear restart")
+
+	// Ack must be "ok" — removal is best-effort.
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "hkrem-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRemove_ServiceRestartFailure_StillAcksOk(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"raw /etc/init.d/dropbear restart": errors.New("service not found"),
+		},
+	}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{"cmd_id":"hkrem-rfail","type":"host_key_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
+	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
+	a := New(&Options{
+		Config:    cfg,
+		Creds:     creds,
+		MAC:       "aa:bb:cc:dd:ee:ff",
+		MQTT:      mock,
+		UCI:       uciMock,
+		FileWriter: fw,
+		Version:   "1.0.0",
+		SSHDaemon: &daemonOpenSSH,
+	})
+
+	payload := `{"cmd_id":"hkrem-openssh","type":"host_key_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/sshd restart")
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestPublishInfo_IncludesSSHDaemonCapability(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "host_key_remove")
+	assert.Contains(t, info.Capabilities, "ssh_daemon:dropbear")
 }
 
 func TestHandleCommand_UCISet_ExecutesAndAcks(t *testing.T) {

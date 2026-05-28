@@ -146,7 +146,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("filename not permitted: %s", safe))
 			return
 		}
-		path := "/etc/dropbear/" + safe
+		path := a.sshDaemon.Dir + safe
 		if err := a.fileWriter.WriteFile(path, content, 0600); err != nil {
 			slog.Error("host_key_restore: write failed", "cmd_id", cmd.CmdID, "file", safe, "err", err)
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", safe, err))
@@ -154,11 +154,31 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 		}
 		slog.Debug("host_key_restore: wrote key file", "file", safe)
 	}
-	// Restart Dropbear so it picks up the restored keys.
-	if _, err := a.uci.ExecRaw("/etc/init.d/dropbear", "restart"); err != nil {
-		// Non-fatal: keys are already on disk; dropbear will use them on next connection.
-		slog.Warn("host_key_restore: dropbear restart failed (non-fatal)", "cmd_id", cmd.CmdID, "err", err)
+	// Restart the SSH daemon so it picks up the restored keys.
+	if _, err := a.uci.ExecRaw(a.sshDaemon.Service, "restart"); err != nil {
+		// Non-fatal: keys are already on disk; the daemon will use them on next connection.
+		slog.Warn("host_key_restore: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
 	}
 	slog.Info("host_key_restore succeeded", "cmd_id", cmd.CmdID, "files", len(hkPayload.Keys))
+	a.publishAck(cmd.CmdID, "ok", "")
+}
+
+func (a *Agent) handleHostKeyRemove(cmd Command) {
+	removed := 0
+	for name := range allowedHostKeyFilenames {
+		path := a.sshDaemon.Dir + name
+		err := os.Remove(path)
+		if err != nil && !os.IsNotExist(err) {
+			slog.Warn("host_key_remove: could not remove file", "cmd_id", cmd.CmdID, "path", path, "err", err)
+		} else if err == nil {
+			slog.Debug("host_key_remove: removed key file", "path", path)
+			removed++
+		}
+	}
+	if _, err := a.uci.ExecRaw(a.sshDaemon.Service, "restart"); err != nil {
+		// Non-fatal: keys are already gone; the daemon will regenerate on next start.
+		slog.Warn("host_key_remove: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
+	}
+	slog.Info("host_key_remove succeeded", "cmd_id", cmd.CmdID, "removed", removed)
 	a.publishAck(cmd.CmdID, "ok", "")
 }
