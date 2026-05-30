@@ -13,9 +13,16 @@ start_service() {
     # retry:     max crash count before giving up (0 = unlimited — avoided here to prevent
     #            infinite crash-loops; logd will record the failure for diagnosis).
     procd_set_param respawn 3600 5 5
+    # Give the agent time to send MQTT DISCONNECT before SIGKILL fires; without this
+    # the broker triggers the LWT and marks the device offline on every intentional restart.
+    procd_set_param term_timeout 15
     procd_set_param stdout 1
     procd_set_param stderr 1
     procd_close_instance
+}
+
+reload_service() {
+    restart
 }
 
 service_triggers() {
