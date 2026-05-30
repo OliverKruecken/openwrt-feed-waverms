@@ -1,6 +1,0 @@
-config waverms 'waverms'
-	option broker_host         'mosquitto.moortwiete.de'
-	option broker_port         '8883'
-	option agent_version       '1.0.0'
-	option heartbeat_interval  '60'
-	option reconnect_max_delay '300'
