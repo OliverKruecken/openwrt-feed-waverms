@@ -8,13 +8,14 @@ import (
 	"path/filepath"
 )
 
-// FileWriter abstracts filesystem writes so that command handlers can be
-// tested without touching the real filesystem.
+// FileWriter abstracts filesystem reads and writes so that command handlers
+// can be tested without touching the real filesystem.
 type FileWriter interface {
 	WriteFile(path string, content []byte, perm os.FileMode) error
+	ReadFile(path string) ([]byte, error)
 }
 
-// OSFileWriter is the production implementation backed by os.WriteFile.
+// OSFileWriter is the production implementation backed by os.WriteFile / os.ReadFile.
 type OSFileWriter struct{}
 
 // WriteFile creates all parent directories (with mode 0755) and then writes
@@ -27,4 +28,10 @@ func (w *OSFileWriter) WriteFile(path string, content []byte, perm os.FileMode) 
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	return os.WriteFile(path, content, perm)
+}
+
+// ReadFile returns the contents of path, or an error (including os.ErrNotExist
+// when the file does not exist).
+func (w *OSFileWriter) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
 }

@@ -1249,3 +1249,98 @@ func TestHandleCommand_FileWrite_DropbearFormat_InvalidBase64_AcksError(t *testi
 	assert.Equal(t, "error", ack.Status)
 	assert.Contains(t, ack.Output, "base64 decode")
 }
+
+// ── host_key_fetch tests ──────────────────────────────────────────────────────
+
+func TestHandleCommand_HostKeyFetch_ReturnsExistingKeys(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	ed25519KeyBytes := []byte{0x00, 0x01, 0x02, 0x03}
+	rsaKeyBytes := []byte{0xAA, 0xBB, 0xCC}
+	fw := &filewriter.MockFileWriter{
+		ReadFiles: map[string][]byte{
+			"/etc/dropbear/dropbear_ed25519_host_key": ed25519KeyBytes,
+			"/etc/dropbear/dropbear_rsa_host_key":     rsaKeyBytes,
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id":"hkf-1","type":"host_key_fetch","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "hkf-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+	require.NotEmpty(t, ack.Keys)
+	assert.Equal(t, ed25519KeyBytes, ack.Keys["dropbear_ed25519_host_key"])
+	assert.Equal(t, rsaKeyBytes, ack.Keys["dropbear_rsa_host_key"])
+}
+
+func TestHandleCommand_HostKeyFetch_SkipsMissingFiles(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	// Only one key present; others return ErrNotExist from the mock.
+	fw := &filewriter.MockFileWriter{
+		ReadFiles: map[string][]byte{
+			"/etc/dropbear/dropbear_ed25519_host_key": []byte("only-key"),
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id":"hkf-partial","type":"host_key_fetch","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+	assert.Equal(t, []byte("only-key"), ack.Keys["dropbear_ed25519_host_key"])
+}
+
+func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{} // all reads return ErrNotExist
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id":"hkf-empty","type":"host_key_fetch","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "hkf-empty", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "no host key files found")
+}
+
+func TestHandleCommand_HostKeyFetch_ReadError_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	injected := errors.New("permission denied")
+	fw := &filewriter.MockFileWriter{
+		ReadErrors: map[string]error{
+			"/etc/dropbear/dropbear_ed25519_host_key": injected,
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id":"hkf-err","type":"host_key_fetch","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+	assert.Contains(t, ack.Output, "read ")
+}
+
+func TestPublishInfo_CapabilitiesContainHostKeyFetch(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "host_key_fetch")
+}

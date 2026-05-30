@@ -87,11 +87,13 @@ type StatePayload struct {
 }
 
 // AckPayload is published to device/{id}/ack after command execution.
+// Keys is non-nil only for host_key_fetch acks; encoding/json base64-encodes []byte automatically.
 type AckPayload struct {
-	CmdID     string `json:"cmd_id"`
-	Status    string `json:"status"`
-	Output    string `json:"output"`
-	Timestamp string `json:"timestamp"`
+	CmdID     string            `json:"cmd_id"`
+	Status    string            `json:"status"`
+	Output    string            `json:"output"`
+	Timestamp string            `json:"timestamp"`
+	Keys      map[string][]byte `json:"keys,omitempty"`
 }
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
@@ -179,6 +181,7 @@ var supportedCapabilities = []string{
 	"state_report",
 	"host_key_restore",
 	"host_key_remove",
+	"host_key_fetch",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -293,6 +296,7 @@ func New(opts *Options) *Agent {
 		"file_write":       a.handleFileWrite,
 		"host_key_restore": a.handleHostKeyRestore,
 		"host_key_remove":  a.handleHostKeyRemove,
+		"host_key_fetch":   a.handleHostKeyFetch,
 	}
 	return a
 }
@@ -522,6 +526,27 @@ func (a *Agent) publishAck(cmdID, status, output string) {
 	defer cancel()
 	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
 		slog.Error("publish ack", "cmd_id", cmdID, "err", err)
+	}
+}
+
+// publishAckKeys publishes an ACK_OK carrying the fetched host key map (host_key_fetch).
+func (a *Agent) publishAckKeys(cmdID string, keys map[string][]byte) {
+	slog.Debug("publishing ack keys", "cmd_id", cmdID, "files", len(keys))
+	ack := AckPayload{
+		CmdID:     cmdID,
+		Status:    "ok",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Keys:      keys,
+	}
+	payload, err := json.Marshal(ack)
+	if err != nil {
+		slog.Error("marshal ack keys", "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
+		slog.Error("publish ack keys", "cmd_id", cmdID, "err", err)
 	}
 }
 

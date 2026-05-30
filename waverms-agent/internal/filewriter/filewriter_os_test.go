@@ -47,3 +47,21 @@ func TestOSFileWriter_RespectsFilePermission(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
 }
+
+func TestOSFileWriter_ReadFile_ReturnsContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "key")
+	require.NoError(t, os.WriteFile(path, []byte("binary\x00data"), 0600))
+
+	w := &OSFileWriter{}
+	got, err := w.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("binary\x00data"), got)
+}
+
+func TestOSFileWriter_ReadFile_MissingFileReturnsNotExist(t *testing.T) {
+	w := &OSFileWriter{}
+	_, err := w.ReadFile("/nonexistent/path/key")
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err))
+}

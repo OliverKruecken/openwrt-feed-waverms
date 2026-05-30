@@ -181,3 +181,28 @@ func (a *Agent) handleHostKeyRemove(cmd Command) {
 	slog.Info("host_key_remove succeeded", "cmd_id", cmd.CmdID, "removed", removed)
 	a.publishAck(cmd.CmdID, "ok", "")
 }
+
+func (a *Agent) handleHostKeyFetch(cmd Command) {
+	allowedFilenames := allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name]
+	keys := make(map[string][]byte)
+	for name := range allowedFilenames {
+		path := a.sshDaemon.Dir + name
+		content, err := a.fileWriter.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			slog.Error("host_key_fetch: read failed", "cmd_id", cmd.CmdID, "file", name, "err", err)
+			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("read %s: %v", name, err))
+			return
+		}
+		keys[name] = content
+	}
+	if len(keys) == 0 {
+		slog.Warn("host_key_fetch: no host key files found", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name)
+		a.publishAck(cmd.CmdID, "error", "no host key files found")
+		return
+	}
+	slog.Info("host_key_fetch succeeded", "cmd_id", cmd.CmdID, "files", len(keys))
+	a.publishAckKeys(cmd.CmdID, keys)
+}

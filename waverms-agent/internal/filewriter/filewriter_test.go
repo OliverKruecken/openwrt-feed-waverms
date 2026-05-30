@@ -68,3 +68,35 @@ func TestMockFileWriter_NilErrors_AlwaysSucceeds(t *testing.T) {
 	require.NoError(t, m.WriteFile("/any/path", []byte("content"), 0755))
 	require.Len(t, m.Calls, 1)
 }
+
+func TestMockFileWriter_ReadFile_ReturnsInjectedContent(t *testing.T) {
+	m := &MockFileWriter{
+		ReadFiles: map[string][]byte{
+			"/etc/dropbear/dropbear_ed25519_host_key": []byte("key-bytes"),
+		},
+	}
+
+	got, err := m.ReadFile("/etc/dropbear/dropbear_ed25519_host_key")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("key-bytes"), got)
+}
+
+func TestMockFileWriter_ReadFile_MissingPathReturnsNotExist(t *testing.T) {
+	m := &MockFileWriter{}
+
+	_, err := m.ReadFile("/etc/dropbear/dropbear_rsa_host_key")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestMockFileWriter_ReadFile_InjectsError(t *testing.T) {
+	injected := errors.New("permission denied")
+	m := &MockFileWriter{
+		ReadErrors: map[string]error{
+			"/etc/dropbear/dropbear_ed25519_host_key": injected,
+		},
+	}
+
+	_, err := m.ReadFile("/etc/dropbear/dropbear_ed25519_host_key")
+	assert.ErrorIs(t, err, injected)
+}
