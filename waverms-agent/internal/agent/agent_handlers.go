@@ -154,7 +154,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 		slog.Debug("host_key_restore: wrote key file", "file", safe)
 	}
 	// Restart the SSH daemon so it picks up the restored keys.
-	if _, err := a.uci.ExecRaw(a.sshDaemon.Service, "restart"); err != nil {
+	if _, err := a.uci.ExecCmd(a.sshDaemon.Service, "restart"); err != nil {
 		// Non-fatal: keys are already on disk; the daemon will use them on next connection.
 		slog.Warn("host_key_restore: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
 	}
@@ -174,7 +174,7 @@ func (a *Agent) handleHostKeyRemove(cmd Command) {
 			removed++
 		}
 	}
-	if _, err := a.uci.ExecRaw(a.sshDaemon.Service, "restart"); err != nil {
+	if _, err := a.uci.ExecCmd(a.sshDaemon.Service, "restart"); err != nil {
 		// Non-fatal: keys are already gone; the daemon will regenerate on next start.
 		slog.Warn("host_key_remove: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
 	}

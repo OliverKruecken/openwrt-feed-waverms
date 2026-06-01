@@ -135,7 +135,7 @@ func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T
 	assert.Equal(t, []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"), contents["/etc/dropbear/ssh_host_ed25519_key.pub"])
 
 	// Dropbear must have been restarted
-	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/dropbear restart")
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/dropbear restart")
 
 	// Ack must be "ok"
 	require.Len(t, mock.Published, 1)
@@ -277,7 +277,7 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{
 		Errors: map[string]error{
-			"raw /etc/init.d/dropbear restart": errors.New("service not found"),
+			"cmd /etc/init.d/dropbear restart": errors.New("service not found"),
 		},
 	}
 	fw := &filewriter.MockFileWriter{}
@@ -309,7 +309,7 @@ func TestHandleCommand_HostKeyRemove_RemovesFilesAndRestartsService(t *testing.T
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
 	// Service must have been restarted.
-	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/dropbear restart")
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/dropbear restart")
 
 	// Ack must be "ok" — removal is best-effort.
 	require.Len(t, mock.Published, 1)
@@ -323,7 +323,7 @@ func TestHandleCommand_HostKeyRemove_ServiceRestartFailure_StillAcksOk(t *testin
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{
 		Errors: map[string]error{
-			"raw /etc/init.d/dropbear restart": errors.New("service not found"),
+			"cmd /etc/init.d/dropbear restart": errors.New("service not found"),
 		},
 	}
 	fw := &filewriter.MockFileWriter{}
@@ -358,7 +358,7 @@ func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing
 	payload := `{"cmd_id":"hkrem-openssh","type":"host_key_remove","payload":{}}`
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	assert.Contains(t, uciMock.Calls, "raw /etc/init.d/sshd restart")
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/sshd restart")
 
 	require.Len(t, mock.Published, 1)
 	var ack AckPayload

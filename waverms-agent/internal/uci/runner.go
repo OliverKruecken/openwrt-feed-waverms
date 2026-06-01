@@ -26,6 +26,8 @@ type UCIRunner interface {
 	Show(pkg string) (string, error)
 	// ExecRaw runs the uci CLI with arbitrary args (for ad-hoc commands from server).
 	ExecRaw(args ...string) (string, error)
+	// ExecCmd runs an arbitrary executable directly (not via uci), e.g. an init script.
+	ExecCmd(path string, args ...string) (string, error)
 }
 
 // RealUCIRunner calls the uci CLI via os/exec.
@@ -99,6 +101,16 @@ func (r *RealUCIRunner) Show(pkg string) (string, error) {
 
 func (r *RealUCIRunner) ExecRaw(args ...string) (string, error) {
 	return run(args...)
+}
+
+func (r *RealUCIRunner) ExecCmd(path string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), uciTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", path, strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // MockUCIRunner records all calls for test assertions.
@@ -199,6 +211,15 @@ func (m *MockUCIRunner) Show(pkg string) (string, error) {
 
 func (m *MockUCIRunner) ExecRaw(args ...string) (string, error) {
 	cmd := "raw " + strings.Join(args, " ")
+	m.record(cmd)
+	return "", m.err(cmd)
+}
+
+func (m *MockUCIRunner) ExecCmd(path string, args ...string) (string, error) {
+	cmd := "cmd " + path
+	if len(args) > 0 {
+		cmd += " " + strings.Join(args, " ")
+	}
 	m.record(cmd)
 	return "", m.err(cmd)
 }
