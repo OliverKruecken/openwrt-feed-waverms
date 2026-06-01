@@ -182,6 +182,36 @@ func (a *Agent) handleHostKeyRemove(cmd Command) {
 	a.publishAck(cmd.CmdID, "ok", "")
 }
 
+type setPasswordPayload struct {
+	Target string `json:"target"`
+	Hash   string `json:"hash"`
+}
+
+func (a *Agent) handleSetPassword(cmd Command) {
+	var p setPasswordPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		slog.Error("invalid set_password payload", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+	if p.Target != "root" {
+		slog.Error("set_password rejected: unsupported target", "cmd_id", cmd.CmdID, "target", p.Target)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("unsupported target: %s", p.Target))
+		return
+	}
+	if p.Hash == "" {
+		a.publishAck(cmd.CmdID, "error", "hash is required")
+		return
+	}
+	if err := a.passwordSetter.SetPassword(p.Target, p.Hash); err != nil {
+		slog.Error("set_password failed", "cmd_id", cmd.CmdID, "target", p.Target, "err", err)
+		a.publishAck(cmd.CmdID, "error", err.Error())
+		return
+	}
+	slog.Info("set_password succeeded", "cmd_id", cmd.CmdID, "target", p.Target)
+	a.publishAck(cmd.CmdID, "ok", "")
+}
+
 func (a *Agent) handleHostKeyFetch(cmd Command) {
 	allowedFilenames := allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name]
 	keys := make(map[string][]byte)

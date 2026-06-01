@@ -1344,3 +1344,103 @@ func TestPublishInfo_CapabilitiesContainHostKeyFetch(t *testing.T) {
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
 	assert.Contains(t, info.Capabilities, "host_key_fetch")
 }
+
+// --- set_password tests -------------------------------------------------------
+
+func newTestAgentWithPasswordSetter(mock *mqttclient.MockMQTTClient, ps *MockPasswordSetter) *Agent {
+	cfg := &config.Config{
+		BrokerHost:        "broker.local",
+		BrokerPort:        8883,
+		HeartbeatInterval: 60,
+	}
+	creds := &config.Credentials{
+		DeviceID: "test-device-uuid",
+		Secret:   "test-secret",
+	}
+	return New(&Options{
+		Config:         cfg,
+		Creds:          creds,
+		MAC:            "aa:bb:cc:dd:ee:ff",
+		MQTT:           mock,
+		UCI:            &uci.MockUCIRunner{},
+		FileWriter:     &filewriter.MockFileWriter{},
+		PasswordSetter: ps,
+		Version:        "1.0.0",
+		SSHDaemon:      &daemonDropbear,
+	})
+}
+
+func TestHandleCommand_SetPassword_ValidHash_AcksOk(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	ps := &MockPasswordSetter{}
+	a := newTestAgentWithPasswordSetter(mock, ps)
+
+	payload := `{"cmd_id":"sp-1","type":"set_password","payload":{"target":"root","hash":"$6$saltsalt$hashhash"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "sp-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+	assert.Contains(t, ps.Calls, "set_password root")
+}
+
+func TestHandleCommand_SetPassword_UnsupportedTarget_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	ps := &MockPasswordSetter{}
+	a := newTestAgentWithPasswordSetter(mock, ps)
+
+	payload := `{"cmd_id":"sp-2","type":"set_password","payload":{"target":"admin","hash":"$6$salt$hash"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "sp-2", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Empty(t, ps.Calls)
+}
+
+func TestHandleCommand_SetPassword_MissingHash_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	ps := &MockPasswordSetter{}
+	a := newTestAgentWithPasswordSetter(mock, ps)
+
+	payload := `{"cmd_id":"sp-3","type":"set_password","payload":{"target":"root","hash":""}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "sp-3", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.Empty(t, ps.Calls)
+}
+
+func TestHandleCommand_SetPassword_SetterError_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	ps := &MockPasswordSetter{Err: errors.New("chpasswd: exit status 1")}
+	a := newTestAgentWithPasswordSetter(mock, ps)
+
+	payload := `{"cmd_id":"sp-4","type":"set_password","payload":{"target":"root","hash":"$6$salt$hash"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "sp-4", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+}
+
+func TestPublishInfo_CapabilitiesContainSetPassword(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "set_password")
+}

@@ -182,6 +182,7 @@ var supportedCapabilities = []string{
 	"host_key_restore",
 	"host_key_remove",
 	"host_key_fetch",
+	"set_password",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -224,6 +225,8 @@ type Options struct {
 	Version        string
 	// FileWriter is used to write files on the device filesystem. Defaults to OSFileWriter.
 	FileWriter filewriter.FileWriter
+	// PasswordSetter is used to set system user passwords. Defaults to OSPasswordSetter.
+	PasswordSetter PasswordSetter
 	// BootstrapOpts overrides the default bootstrap options (useful in tests).
 	BootstrapOpts *bootstrap.Options
 	// BootstrapTokenPath is used if BootstrapOpts is nil. Defaults to /etc/waverms/bootstrap_token.
@@ -244,6 +247,7 @@ type Agent struct {
 	mqtt           mqttclient.MQTTClient
 	uci            uci.UCIRunner
 	fileWriter     filewriter.FileWriter
+	passwordSetter PasswordSetter
 	version        string
 	sshDaemon      sshDaemonInfo
 
@@ -268,6 +272,10 @@ func New(opts *Options) *Agent {
 	if fw == nil {
 		fw = &filewriter.OSFileWriter{}
 	}
+	ps := opts.PasswordSetter
+	if ps == nil {
+		ps = &OSPasswordSetter{}
+	}
 
 	daemon := daemonDropbear
 	if opts.SSHDaemon != nil {
@@ -285,6 +293,7 @@ func New(opts *Options) *Agent {
 		mqtt:               opts.MQTT,
 		uci:                opts.UCI,
 		fileWriter:         fw,
+		passwordSetter:     ps,
 		version:            opts.Version,
 		sshDaemon:          daemon,
 		bootstrapTokenPath: tokenPath,
@@ -297,6 +306,7 @@ func New(opts *Options) *Agent {
 		"host_key_restore": a.handleHostKeyRestore,
 		"host_key_remove":  a.handleHostKeyRemove,
 		"host_key_fetch":   a.handleHostKeyFetch,
+		"set_password":     a.handleSetPassword,
 	}
 	return a
 }
