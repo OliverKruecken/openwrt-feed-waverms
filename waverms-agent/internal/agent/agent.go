@@ -84,6 +84,9 @@ type StatePayload struct {
 	Timestamp string                                          `json:"timestamp"`
 	Trigger   string                                          `json:"trigger"`
 	Packages  map[string]map[string][]map[string]interface{} `json:"packages"`
+	// RawFiles contains the verbatim content of /etc/config/<pkg> for each package,
+	// preserving comments and formatting that uci export strips.
+	RawFiles map[string]string `json:"raw_files,omitempty"`
 }
 
 // AckPayload is published to device/{id}/ack after command execution.
@@ -600,6 +603,7 @@ func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string)
 	slog.Debug("publishing state", "trigger", trigger, "packages", pkgs)
 
 	packages := make(map[string]map[string][]map[string]interface{})
+	rawFiles := make(map[string]string)
 	for _, pkg := range pkgs {
 		out, err := a.uci.Export(pkg)
 		if err != nil {
@@ -614,12 +618,16 @@ func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string)
 		if len(sections) > 0 {
 			packages[pkg] = sections
 		}
+		if raw, readErr := os.ReadFile("/etc/config/" + pkg); readErr == nil {
+			rawFiles[pkg] = string(raw)
+		}
 	}
 
 	state := StatePayload{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Trigger:   trigger,
 		Packages:  packages,
+		RawFiles:  rawFiles,
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
