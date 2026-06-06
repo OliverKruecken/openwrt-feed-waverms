@@ -236,3 +236,66 @@ func (a *Agent) handleHostKeyFetch(cmd Command) {
 	slog.Info("host_key_fetch succeeded", "cmd_id", cmd.CmdID, "files", len(keys))
 	a.publishAckKeys(cmd.CmdID, keys)
 }
+
+type tlsCertPushPayload struct {
+	CertPEM        string `json:"cert_pem"`
+	KeyPEM         string `json:"key_pem"`
+	CertPath       string `json:"cert_path"`
+	KeyPath        string `json:"key_path"`
+	RestartService string `json:"restart_service"`
+}
+
+func (a *Agent) handleTlsCertPush(cmd Command) {
+	var p tlsCertPushPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		slog.Error("invalid tls_cert_push payload", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+	if p.CertPEM == "" || p.KeyPEM == "" {
+		a.publishAck(cmd.CmdID, "error", "cert_pem and key_pem are required")
+		return
+	}
+	if p.CertPath == "" || p.KeyPath == "" {
+		a.publishAck(cmd.CmdID, "error", "cert_path and key_path are required")
+		return
+	}
+	if !isTlsCertPathAllowed(p.CertPath) {
+		slog.Error("tls_cert_push rejected: cert_path not in allowlist", "cmd_id", cmd.CmdID, "path", p.CertPath)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("cert_path not permitted: %s", p.CertPath))
+		return
+	}
+	if !isTlsCertPathAllowed(p.KeyPath) {
+		slog.Error("tls_cert_push rejected: key_path not in allowlist", "cmd_id", cmd.CmdID, "path", p.KeyPath)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("key_path not permitted: %s", p.KeyPath))
+		return
+	}
+
+	if err := a.fileWriter.WriteFile(p.CertPath, []byte(p.CertPEM), 0644); err != nil {
+		slog.Error("tls_cert_push: write cert failed", "cmd_id", cmd.CmdID, "path", p.CertPath, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write cert: %v", err))
+		return
+	}
+	if err := a.fileWriter.WriteFile(p.KeyPath, []byte(p.KeyPEM), 0600); err != nil {
+		slog.Error("tls_cert_push: write key failed", "cmd_id", cmd.CmdID, "path", p.KeyPath, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write key: %v", err))
+		return
+	}
+
+	svc := p.RestartService
+	if svc == "" {
+		svc = "uhttpd"
+	}
+	if _, err := a.uci.ExecCmd("/etc/init.d/"+svc, "restart"); err != nil {
+		slog.Warn("tls_cert_push: service restart failed (best-effort)", "cmd_id", cmd.CmdID, "service", svc, "err", err)
+	}
+
+	slog.Info("tls_cert_push succeeded", "cmd_id", cmd.CmdID, "cert_path", p.CertPath, "key_path", p.KeyPath)
+	a.publishAck(cmd.CmdID, "ok", "")
+}
+
+// isTlsCertPathAllowed validates that the path starts with /etc/ or /tmp/ after cleaning.
+func isTlsCertPathAllowed(path string) bool {
+	clean := filepath.Clean(path)
+	return strings.HasPrefix(clean, "/etc/") || strings.HasPrefix(clean, "/tmp/")
+}

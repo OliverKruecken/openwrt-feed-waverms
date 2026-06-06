@@ -1444,3 +1444,83 @@ func TestPublishInfo_CapabilitiesContainSetPassword(t *testing.T) {
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
 	assert.Contains(t, info.Capabilities, "set_password")
 }
+
+func TestHandleCommand_TlsCertPush_WritesFilesAndRestartsUhttpd(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{
+		"cmd_id": "tcp-1",
+		"type": "tls_cert_push",
+		"payload": {
+			"cert_pem": "-----BEGIN CERTIFICATE-----\nfakecert\n-----END CERTIFICATE-----",
+			"key_pem":  "-----BEGIN PRIVATE KEY-----\nfakekey\n-----END PRIVATE KEY-----",
+			"cert_path": "/etc/uhttpd.crt",
+			"key_path":  "/etc/uhttpd.key",
+			"restart_service": "uhttpd"
+		}
+	}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, fw.Calls, 2)
+	files := make(map[string]filewriter.WriteCall)
+	for _, c := range fw.Calls {
+		files[c.Path] = c
+	}
+	require.Contains(t, files, "/etc/uhttpd.crt")
+	require.Contains(t, files, "/etc/uhttpd.key")
+	assert.Equal(t, os.FileMode(0644), files["/etc/uhttpd.crt"].Perm)
+	assert.Equal(t, os.FileMode(0600), files["/etc/uhttpd.key"].Perm)
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/uhttpd restart")
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "tcp-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_TlsCertPush_PathTraversalGuard(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	payload := `{"cmd_id":"tcp-2","type":"tls_cert_push","payload":{"cert_pem":"cert","key_pem":"key","cert_path":"/var/malicious","key_path":"/etc/uhttpd.key"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	assert.Empty(t, fw.Calls)
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "error", ack.Status)
+}
+
+func TestHandleCommand_TlsCertPush_DefaultServiceIsUhttpd(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileWriter{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{"cmd_id":"tcp-3","type":"tls_cert_push","payload":{"cert_pem":"cert","key_pem":"key","cert_path":"/etc/uhttpd.crt","key_path":"/etc/uhttpd.key"}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/uhttpd restart")
+
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestPublishInfo_CapabilitiesContainTlsCertPush(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "tls_cert_push")
+}

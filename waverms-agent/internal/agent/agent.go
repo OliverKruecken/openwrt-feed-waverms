@@ -186,6 +186,7 @@ var supportedCapabilities = []string{
 	"host_key_remove",
 	"host_key_fetch",
 	"set_password",
+	"tls_cert_push",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -310,6 +311,7 @@ func New(opts *Options) *Agent {
 		"host_key_remove":  a.handleHostKeyRemove,
 		"host_key_fetch":   a.handleHostKeyFetch,
 		"set_password":     a.handleSetPassword,
+		"tls_cert_push":    a.handleTlsCertPush,
 	}
 	return a
 }
