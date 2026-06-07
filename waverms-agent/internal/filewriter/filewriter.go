@@ -1,5 +1,5 @@
-// Package filewriter provides the FileWriter interface and implementations for
-// writing files to the device filesystem.
+// Package filewriter provides the FileAccess interface and implementations for
+// reading and writing files on the device filesystem.
 package filewriter
 
 import (
@@ -8,21 +8,21 @@ import (
 	"path/filepath"
 )
 
-// FileWriter abstracts filesystem reads and writes so that command handlers
+// FileAccess abstracts filesystem reads and writes so that command handlers
 // can be tested without touching the real filesystem.
-type FileWriter interface {
+type FileAccess interface {
 	WriteFile(path string, content []byte, perm os.FileMode) error
 	ReadFile(path string) ([]byte, error)
 }
 
-// OSFileWriter is the production implementation backed by os.WriteFile / os.ReadFile.
-type OSFileWriter struct{}
+// OSFileAccess is the production implementation backed by os.WriteFile / os.ReadFile.
+type OSFileAccess struct{}
 
 // WriteFile creates all parent directories (with mode 0755) and then writes
 // content to path with the given permission bits. This ensures that paths like
 // /etc/dropbear/authorized_keys succeed even when the parent directory does not
 // yet exist on the device.
-func (w *OSFileWriter) WriteFile(path string, content []byte, perm os.FileMode) error {
+func (w *OSFileAccess) WriteFile(path string, content []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
@@ -32,6 +32,6 @@ func (w *OSFileWriter) WriteFile(path string, content []byte, perm os.FileMode) 
 
 // ReadFile returns the contents of path, or an error (including os.ErrNotExist
 // when the file does not exist).
-func (w *OSFileWriter) ReadFile(path string) ([]byte, error) {
+func (w *OSFileAccess) ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }

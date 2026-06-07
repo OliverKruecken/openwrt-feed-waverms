@@ -229,8 +229,8 @@ type Options struct {
 	MQTT           mqttclient.MQTTClient
 	UCI            uci.UCIRunner
 	Version        string
-	// FileWriter is used to write files on the device filesystem. Defaults to OSFileWriter.
-	FileWriter filewriter.FileWriter
+	// FileAccess is used to read/write files on the device filesystem. Defaults to OSFileAccess.
+	FileAccess filewriter.FileAccess
 	// PasswordSetter is used to set system user passwords. Defaults to OSPasswordSetter.
 	PasswordSetter PasswordSetter
 	// BootstrapOpts overrides the default bootstrap options (useful in tests).
@@ -252,7 +252,7 @@ type Agent struct {
 	openwrtVersion string
 	mqtt           mqttclient.MQTTClient
 	uci            uci.UCIRunner
-	fileWriter     filewriter.FileWriter
+	fileAccess     filewriter.FileAccess
 	passwordSetter PasswordSetter
 	version        string
 	sshDaemon      sshDaemonInfo
@@ -291,9 +291,9 @@ func New(opts *Options) *Agent {
 		credsPath = "/etc/waverms/credentials"
 	}
 
-	fw := opts.FileWriter
+	fw := opts.FileAccess
 	if fw == nil {
-		fw = &filewriter.OSFileWriter{}
+		fw = &filewriter.OSFileAccess{}
 	}
 	ps := opts.PasswordSetter
 	if ps == nil {
@@ -315,7 +315,7 @@ func New(opts *Options) *Agent {
 		openwrtVersion:     opts.OpenWrtVersion,
 		mqtt:               opts.MQTT,
 		uci:                opts.UCI,
-		fileWriter:         fw,
+		fileAccess:         fw,
 		passwordSetter:     ps,
 		version:            opts.Version,
 		sshDaemon:          daemon,

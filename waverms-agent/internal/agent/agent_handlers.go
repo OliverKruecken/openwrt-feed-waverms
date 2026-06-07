@@ -146,7 +146,7 @@ func (a *Agent) handleFileWrite(cmd Command) {
 	default: // "openssh" or absent — plain text, backward-compatible
 		fileContent = []byte(fwPayload.Content)
 	}
-	if err := a.fileWriter.WriteFile(fwPayload.Path, fileContent, perm); err != nil {
+	if err := a.fileAccess.WriteFile(fwPayload.Path, fileContent, perm); err != nil {
 		slog.Error("file_write failed", "cmd_id", cmd.CmdID, "path", fwPayload.Path, "err", err)
 		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", fwPayload.Path, err))
 		return
@@ -177,7 +177,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 			return
 		}
 		path := a.sshDaemon.Dir + safe
-		if err := a.fileWriter.WriteFile(path, content, 0600); err != nil {
+		if err := a.fileAccess.WriteFile(path, content, 0600); err != nil {
 			slog.Error("host_key_restore: write failed", "cmd_id", cmd.CmdID, "file", safe, "err", err)
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write %s: %v", safe, err))
 			return
@@ -248,7 +248,7 @@ func (a *Agent) handleHostKeyFetch(cmd Command) {
 	keys := make(map[string][]byte)
 	for name := range allowedFilenames {
 		path := a.sshDaemon.Dir + name
-		content, err := a.fileWriter.ReadFile(path)
+		content, err := a.fileAccess.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -302,12 +302,12 @@ func (a *Agent) handleTlsCertPush(cmd Command) {
 		return
 	}
 
-	if err := a.fileWriter.WriteFile(p.CertPath, []byte(p.CertPEM), 0644); err != nil {
+	if err := a.fileAccess.WriteFile(p.CertPath, []byte(p.CertPEM), 0644); err != nil {
 		slog.Error("tls_cert_push: write cert failed", "cmd_id", cmd.CmdID, "path", p.CertPath, "err", err)
 		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write cert: %v", err))
 		return
 	}
-	if err := a.fileWriter.WriteFile(p.KeyPath, []byte(p.KeyPEM), 0600); err != nil {
+	if err := a.fileAccess.WriteFile(p.KeyPath, []byte(p.KeyPEM), 0600); err != nil {
 		slog.Error("tls_cert_push: write key failed", "cmd_id", cmd.CmdID, "path", p.KeyPath, "err", err)
 		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("write key: %v", err))
 		return

@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner, fw *filewriter.MockFileWriter) *Agent {
+func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner, fw *filewriter.MockFileAccess) *Agent {
 	cfg := &config.Config{
 		BrokerHost:        "broker.local",
 		BrokerPort:        8883,
@@ -34,14 +34,14 @@ func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRun
 		MAC:        "aa:bb:cc:dd:ee:ff",
 		MQTT:       mock,
 		UCI:        uciMock,
-		FileWriter: fw,
+		FileAccess: fw,
 		Version:    "1.0.0",
 		SSHDaemon:  &daemonDropbear,
 	})
 }
 
 func newTestAgent(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRunner) *Agent {
-	return newTestAgentWithFW(mock, uciMock, &filewriter.MockFileWriter{})
+	return newTestAgentWithFW(mock, uciMock, &filewriter.MockFileAccess{})
 }
 
 func TestPublishInfo_SendsToCorrectTopic(t *testing.T) {
@@ -100,7 +100,7 @@ func TestPublishInfo_CapabilitiesContainExpectedTypes(t *testing.T) {
 func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	// Values are standard base64 (RFC 4648); encoding/json decodes []byte automatically.
@@ -148,7 +148,7 @@ func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T
 func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	// A path-traversal key resolves to "passwd" after filepath.Base().
@@ -179,14 +179,14 @@ func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
 
 func TestHandleCommand_HostKeyRestore_DisallowedFilename_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	disallowed := []string{"authorized_keys", ".profile", "known_hosts", "passwd", "shadow"}
 	for _, fname := range disallowed {
 		t.Run(fname, func(t *testing.T) {
 			mock := mqttclient.NewMockMQTTClient()
-			fw := &filewriter.MockFileWriter{}
+			fw := &filewriter.MockFileAccess{}
 			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 			payload := `{"cmd_id":"hkr-deny","type":"host_key_restore","payload":{"keys":{"` + fname + `":"Y29udGVudA=="}}}`
@@ -207,7 +207,7 @@ func TestHandleCommand_HostKeyRestore_DisallowedFilename_AcksError(t *testing.T)
 
 func TestHandleCommand_HostKeyRestore_OpenSSH_RejectDropbearFilename(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
 	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
 	a := New(&Options{
@@ -216,7 +216,7 @@ func TestHandleCommand_HostKeyRestore_OpenSSH_RejectDropbearFilename(t *testing.
 		MAC:       "aa:bb:cc:dd:ee:ff",
 		MQTT:      mock,
 		UCI:       &uci.MockUCIRunner{},
-		FileWriter: fw,
+		FileAccess: fw,
 		Version:   "1.0.0",
 		SSHDaemon: &daemonOpenSSH,
 	})
@@ -236,7 +236,7 @@ func TestHandleCommand_HostKeyRestore_OpenSSH_RejectDropbearFilename(t *testing.
 func TestHandleCommand_HostKeyRestore_WriteError_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{
+	fw := &filewriter.MockFileAccess{
 		Errors: map[string]error{
 			"/etc/dropbear/ssh_host_ed25519_key": errors.New("disk full"),
 		},
@@ -280,7 +280,7 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 			"cmd /etc/init.d/dropbear restart": errors.New("service not found"),
 		},
 	}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	// "content" base64-encoded
@@ -302,7 +302,7 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 func TestHandleCommand_HostKeyRemove_RemovesFilesAndRestartsService(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	payload := `{"cmd_id":"hkrem-1","type":"host_key_remove","payload":{}}`
@@ -326,7 +326,7 @@ func TestHandleCommand_HostKeyRemove_ServiceRestartFailure_StillAcksOk(t *testin
 			"cmd /etc/init.d/dropbear restart": errors.New("service not found"),
 		},
 	}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	payload := `{"cmd_id":"hkrem-rfail","type":"host_key_remove","payload":{}}`
@@ -341,7 +341,7 @@ func TestHandleCommand_HostKeyRemove_ServiceRestartFailure_StillAcksOk(t *testin
 func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
 	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
 	a := New(&Options{
@@ -350,7 +350,7 @@ func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing
 		MAC:       "aa:bb:cc:dd:ee:ff",
 		MQTT:      mock,
 		UCI:       uciMock,
-		FileWriter: fw,
+		FileAccess: fw,
 		Version:   "1.0.0",
 		SSHDaemon: &daemonOpenSSH,
 	})
@@ -1013,7 +1013,7 @@ func TestRunSession_SubscribesStateRequest(t *testing.T) {
 
 func TestHandleCommand_FileWrite_WritesFileAndAcksOk(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{
@@ -1040,7 +1040,7 @@ func TestHandleCommand_FileWrite_WritesFileAndAcksOk(t *testing.T) {
 
 func TestHandleCommand_FileWrite_WriteError_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{
+	fw := &filewriter.MockFileAccess{
 		Errors: map[string]error{
 			"/etc/dropbear/authorized_keys": errors.New("permission denied"),
 		},
@@ -1064,7 +1064,7 @@ func TestHandleCommand_FileWrite_WriteError_AcksError(t *testing.T) {
 
 func TestHandleCommand_FileWrite_InvalidPayload_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{"cmd_id": "fw-bad", "type": "file_write", "payload": "not-an-object"}`
@@ -1083,7 +1083,7 @@ func TestHandleCommand_FileWrite_InvalidPayload_AcksError(t *testing.T) {
 
 func TestHandleCommand_FileWrite_MissingPath_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{"cmd_id": "fw-nopath", "type": "file_write", "payload": {"path": "", "content": "data"}}`
@@ -1101,7 +1101,7 @@ func TestHandleCommand_FileWrite_MissingPath_AcksError(t *testing.T) {
 
 func TestHandleCommand_FileWrite_CustomMode_UsesCorrectPerm(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{
@@ -1122,7 +1122,7 @@ func TestHandleCommand_FileWrite_CustomMode_UsesCorrectPerm(t *testing.T) {
 
 func TestHandleCommand_FileWrite_NoMode_Defaults0600(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	// Omit "mode" field entirely.
@@ -1144,7 +1144,7 @@ func TestHandleCommand_FileWrite_NoMode_Defaults0600(t *testing.T) {
 
 func TestHandleCommand_FileWrite_DropbearFormat_DecodesBase64(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	// A small binary blob that is not valid UTF-8.
@@ -1173,7 +1173,7 @@ func TestHandleCommand_FileWrite_DropbearFormat_DecodesBase64(t *testing.T) {
 
 func TestHandleCommand_FileWrite_DisallowedPath_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	cases := []struct {
@@ -1190,7 +1190,7 @@ func TestHandleCommand_FileWrite_DisallowedPath_AcksError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mock := mqttclient.NewMockMQTTClient()
-			fw := &filewriter.MockFileWriter{}
+			fw := &filewriter.MockFileAccess{}
 			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 			payload := `{"cmd_id":"fw-deny","type":"file_write","payload":{"path":"` + tc.path + `","content":"evil"}}`
@@ -1224,7 +1224,7 @@ func TestHandleCommand_FileWrite_AllowedPaths_AreAccepted(t *testing.T) {
 	for _, path := range cases {
 		t.Run(path, func(t *testing.T) {
 			mock := mqttclient.NewMockMQTTClient()
-			fw := &filewriter.MockFileWriter{}
+			fw := &filewriter.MockFileAccess{}
 			a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 			payload := `{"cmd_id":"fw-allow","type":"file_write","payload":{"path":"` + path + `","content":"data"}}`
@@ -1241,7 +1241,7 @@ func TestHandleCommand_FileWrite_AllowedPaths_AreAccepted(t *testing.T) {
 
 func TestHandleCommand_FileWrite_DropbearFormat_InvalidBase64_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{
@@ -1268,7 +1268,7 @@ func TestHandleCommand_HostKeyFetch_ReturnsExistingKeys(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	ed25519KeyBytes := []byte{0x00, 0x01, 0x02, 0x03}
 	rsaKeyBytes := []byte{0xAA, 0xBB, 0xCC}
-	fw := &filewriter.MockFileWriter{
+	fw := &filewriter.MockFileAccess{
 		ReadFiles: map[string][]byte{
 			"/etc/dropbear/dropbear_ed25519_host_key": ed25519KeyBytes,
 			"/etc/dropbear/dropbear_rsa_host_key":     rsaKeyBytes,
@@ -1292,7 +1292,7 @@ func TestHandleCommand_HostKeyFetch_ReturnsExistingKeys(t *testing.T) {
 func TestHandleCommand_HostKeyFetch_SkipsMissingFiles(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	// Only one key present; others return ErrNotExist from the mock.
-	fw := &filewriter.MockFileWriter{
+	fw := &filewriter.MockFileAccess{
 		ReadFiles: map[string][]byte{
 			"/etc/dropbear/dropbear_ed25519_host_key": []byte("only-key"),
 		},
@@ -1311,7 +1311,7 @@ func TestHandleCommand_HostKeyFetch_SkipsMissingFiles(t *testing.T) {
 
 func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{} // all reads return ErrNotExist
+	fw := &filewriter.MockFileAccess{} // all reads return ErrNotExist
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{"cmd_id":"hkf-empty","type":"host_key_fetch","payload":{}}`
@@ -1328,7 +1328,7 @@ func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksError(t *testing.T) {
 func TestHandleCommand_HostKeyFetch_ReadError_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	injected := errors.New("permission denied")
-	fw := &filewriter.MockFileWriter{
+	fw := &filewriter.MockFileAccess{
 		ReadErrors: map[string]error{
 			"/etc/dropbear/dropbear_ed25519_host_key": injected,
 		},
@@ -1375,7 +1375,7 @@ func newTestAgentWithPasswordSetter(mock *mqttclient.MockMQTTClient, ps *MockPas
 		MAC:            "aa:bb:cc:dd:ee:ff",
 		MQTT:           mock,
 		UCI:            &uci.MockUCIRunner{},
-		FileWriter:     &filewriter.MockFileWriter{},
+		FileAccess:     &filewriter.MockFileAccess{},
 		PasswordSetter: ps,
 		Version:        "1.0.0",
 		SSHDaemon:      &daemonDropbear,
@@ -1460,7 +1460,7 @@ func TestPublishInfo_CapabilitiesContainSetPassword(t *testing.T) {
 func TestHandleCommand_TlsCertPush_WritesFilesAndRestartsUhttpd(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	payload := `{
@@ -1496,7 +1496,7 @@ func TestHandleCommand_TlsCertPush_WritesFilesAndRestartsUhttpd(t *testing.T) {
 
 func TestHandleCommand_TlsCertPush_PathTraversalGuard(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
 
 	payload := `{"cmd_id":"tcp-2","type":"tls_cert_push","payload":{"cert_pem":"cert","key_pem":"key","cert_path":"/var/malicious","key_path":"/etc/uhttpd.key"}}`
@@ -1512,7 +1512,7 @@ func TestHandleCommand_TlsCertPush_PathTraversalGuard(t *testing.T) {
 func TestHandleCommand_TlsCertPush_DefaultServiceIsUhttpd(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{}
-	fw := &filewriter.MockFileWriter{}
+	fw := &filewriter.MockFileAccess{}
 	a := newTestAgentWithFW(mock, uciMock, fw)
 
 	payload := `{"cmd_id":"tcp-3","type":"tls_cert_push","payload":{"cert_pem":"cert","key_pem":"key","cert_path":"/etc/uhttpd.crt","key_path":"/etc/uhttpd.key"}}`

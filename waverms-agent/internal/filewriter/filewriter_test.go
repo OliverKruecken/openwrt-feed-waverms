@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMockFileWriter_RecordsCall(t *testing.T) {
-	m := &MockFileWriter{}
+func TestMockFileAccess_RecordsCall(t *testing.T) {
+	m := &MockFileAccess{}
 
 	err := m.WriteFile("/etc/dropbear/authorized_keys", []byte("ssh-ed25519 AAAA..."), 0600)
 	require.NoError(t, err)
@@ -21,8 +21,8 @@ func TestMockFileWriter_RecordsCall(t *testing.T) {
 	assert.Equal(t, os.FileMode(0600), m.Calls[0].Perm)
 }
 
-func TestMockFileWriter_RecordsMultipleCalls(t *testing.T) {
-	m := &MockFileWriter{}
+func TestMockFileAccess_RecordsMultipleCalls(t *testing.T) {
+	m := &MockFileAccess{}
 
 	require.NoError(t, m.WriteFile("/path/a", []byte("a"), 0600))
 	require.NoError(t, m.WriteFile("/path/b", []byte("b"), 0644))
@@ -32,9 +32,9 @@ func TestMockFileWriter_RecordsMultipleCalls(t *testing.T) {
 	assert.Equal(t, "/path/b", m.Calls[1].Path)
 }
 
-func TestMockFileWriter_InjectsErrorByPath(t *testing.T) {
+func TestMockFileAccess_InjectsErrorByPath(t *testing.T) {
 	injected := errors.New("permission denied")
-	m := &MockFileWriter{
+	m := &MockFileAccess{
 		Errors: map[string]error{
 			"/etc/protected": injected,
 		},
@@ -48,8 +48,8 @@ func TestMockFileWriter_InjectsErrorByPath(t *testing.T) {
 	assert.Equal(t, "/etc/protected", m.Calls[0].Path)
 }
 
-func TestMockFileWriter_NonErroringPathSucceeds(t *testing.T) {
-	m := &MockFileWriter{
+func TestMockFileAccess_NonErroringPathSucceeds(t *testing.T) {
+	m := &MockFileAccess{
 		Errors: map[string]error{
 			"/etc/protected": errors.New("no access"),
 		},
@@ -62,15 +62,15 @@ func TestMockFileWriter_NonErroringPathSucceeds(t *testing.T) {
 	assert.Equal(t, "/etc/allowed", m.Calls[0].Path)
 }
 
-func TestMockFileWriter_NilErrors_AlwaysSucceeds(t *testing.T) {
-	m := &MockFileWriter{}
+func TestMockFileAccess_NilErrors_AlwaysSucceeds(t *testing.T) {
+	m := &MockFileAccess{}
 
 	require.NoError(t, m.WriteFile("/any/path", []byte("content"), 0755))
 	require.Len(t, m.Calls, 1)
 }
 
-func TestMockFileWriter_ReadFile_ReturnsInjectedContent(t *testing.T) {
-	m := &MockFileWriter{
+func TestMockFileAccess_ReadFile_ReturnsInjectedContent(t *testing.T) {
+	m := &MockFileAccess{
 		ReadFiles: map[string][]byte{
 			"/etc/dropbear/dropbear_ed25519_host_key": []byte("key-bytes"),
 		},
@@ -81,17 +81,17 @@ func TestMockFileWriter_ReadFile_ReturnsInjectedContent(t *testing.T) {
 	assert.Equal(t, []byte("key-bytes"), got)
 }
 
-func TestMockFileWriter_ReadFile_MissingPathReturnsNotExist(t *testing.T) {
-	m := &MockFileWriter{}
+func TestMockFileAccess_ReadFile_MissingPathReturnsNotExist(t *testing.T) {
+	m := &MockFileAccess{}
 
 	_, err := m.ReadFile("/etc/dropbear/dropbear_rsa_host_key")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestMockFileWriter_ReadFile_InjectsError(t *testing.T) {
+func TestMockFileAccess_ReadFile_InjectsError(t *testing.T) {
 	injected := errors.New("permission denied")
-	m := &MockFileWriter{
+	m := &MockFileAccess{
 		ReadErrors: map[string]error{
 			"/etc/dropbear/dropbear_ed25519_host_key": injected,
 		},
