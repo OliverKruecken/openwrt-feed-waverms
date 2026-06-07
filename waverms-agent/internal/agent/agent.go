@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -100,16 +101,24 @@ type AckPayload struct {
 	Keys      map[string][]byte `json:"keys,omitempty"`
 }
 
+// ServiceInfo describes a single OpenWrt init.d service discovered on the device.
+type ServiceInfo struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+}
+
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID       string   `json:"device_id"`
-	Hostname       string   `json:"hostname"`
-	UptimeSeconds  int64    `json:"uptime_seconds"`
-	AgentVersion   string   `json:"agent_version"`
-	Model          string   `json:"model"`
-	OpenWrtVersion string   `json:"openwrt_version"`
-	Timestamp      string   `json:"timestamp"`
-	Capabilities   []string `json:"capabilities"`
+	DeviceID       string        `json:"device_id"`
+	Hostname       string        `json:"hostname"`
+	UptimeSeconds  int64         `json:"uptime_seconds"`
+	AgentVersion   string        `json:"agent_version"`
+	Model          string        `json:"model"`
+	OpenWrtVersion string        `json:"openwrt_version"`
+	Timestamp      string        `json:"timestamp"`
+	Capabilities   []string      `json:"capabilities"`
+	Services       []ServiceInfo `json:"services,omitempty"`
 }
 
 // allowedUCISubcmds is the set of UCI subcommands that uci_set is permitted to
@@ -189,6 +198,7 @@ var supportedCapabilities = []string{
 	"host_key_fetch",
 	"set_password",
 	"tls_cert_push",
+	"service_apply",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -219,6 +229,36 @@ func discoverPackages() []string {
 	return pkgs
 }
 
+// serviceNameRe matches valid OpenWrt init.d service names: alphanumeric, dash, underscore.
+var serviceNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// discoverServices scans initdDir for service scripts and returns their enabled/running state.
+// Best-effort: entries that cannot be checked are skipped silently.
+func discoverServices(runner uci.UCIRunner, initdDir string) []ServiceInfo {
+	entries, err := os.ReadDir(initdDir)
+	if err != nil {
+		slog.Debug("discoverServices: cannot read initd dir", "dir", initdDir, "err", err)
+		return nil
+	}
+	var services []ServiceInfo
+	for _, e := range entries {
+		if !e.Type().IsRegular() && e.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		name := e.Name()
+		if !serviceNameRe.MatchString(name) {
+			continue
+		}
+		script := initdDir + "/" + name
+		_, errEnabled := runner.ExecCmd(script, "enabled")
+		enabled := errEnabled == nil
+		_, errRunning := runner.ExecCmd(script, "running")
+		running := errRunning == nil
+		services = append(services, ServiceInfo{Name: name, Enabled: enabled, Running: running})
+	}
+	return services
+}
+
 // Options holds all dependencies for the Agent.
 type Options struct {
 	Config         *config.Config
@@ -241,6 +281,8 @@ type Options struct {
 	CredsPath string
 	// SSHDaemon overrides the SSH daemon detection (useful in tests). Defaults to detectSSHDaemon().
 	SSHDaemon *sshDaemonInfo
+	// InitdDir is the path scanned for available services. Defaults to /etc/init.d.
+	InitdDir string
 }
 
 // Agent is the main runtime component.
@@ -256,6 +298,7 @@ type Agent struct {
 	passwordSetter PasswordSetter
 	version        string
 	sshDaemon      sshDaemonInfo
+	initdDir       string
 
 	bootstrapTokenPath string
 	credsPath          string
@@ -307,6 +350,11 @@ func New(opts *Options) *Agent {
 		daemon = detectSSHDaemon()
 	}
 
+	initdDir := opts.InitdDir
+	if initdDir == "" {
+		initdDir = "/etc/init.d"
+	}
+
 	a := &Agent{
 		cfg:                opts.Config,
 		creds:              opts.Creds,
@@ -319,6 +367,7 @@ func New(opts *Options) *Agent {
 		passwordSetter:     ps,
 		version:            opts.Version,
 		sshDaemon:          daemon,
+		initdDir:           initdDir,
 		bootstrapTokenPath: tokenPath,
 		credsPath:          credsPath,
 	}
@@ -332,6 +381,7 @@ func New(opts *Options) *Agent {
 		"host_key_fetch":   a.handleHostKeyFetch,
 		"set_password":     a.handleSetPassword,
 		"tls_cert_push":    a.handleTlsCertPush,
+		"service_apply":    a.handleServiceApply,
 	}
 	return a
 }
@@ -605,6 +655,7 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 	slog.Debug("publishing heartbeat", "hostname", hostname, "uptime_seconds", uptime)
 
 	caps := append(supportedCapabilities, "ssh_daemon:"+a.sshDaemon.Name)
+	services := discoverServices(a.uci, a.initdDir)
 	info := InfoPayload{
 		DeviceID:       a.creds.DeviceID,
 		Hostname:       hostname,
@@ -614,6 +665,7 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 		OpenWrtVersion: a.openwrtVersion,
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 		Capabilities:   caps,
+		Services:       services,
 	}
 
 	payload, err := json.Marshal(info)

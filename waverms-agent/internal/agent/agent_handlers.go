@@ -330,3 +330,58 @@ func isTlsCertPathAllowed(path string) bool {
 	clean := filepath.Clean(path)
 	return strings.HasPrefix(clean, "/etc/") || strings.HasPrefix(clean, "/tmp/")
 }
+
+func (a *Agent) handleServiceApply(cmd Command) {
+	var p struct {
+		Services map[string]bool `json:"services"`
+	}
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		slog.Error("service_apply: invalid payload", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+
+	var errs []string
+	for name, enable := range p.Services {
+		if !serviceNameRe.MatchString(name) || len(name) > 64 {
+			slog.Warn("service_apply: invalid service name, skipping", "cmd_id", cmd.CmdID, "name", name)
+			errs = append(errs, fmt.Sprintf("%s: invalid name", name))
+			continue
+		}
+		script := filepath.Join(a.initdDir, name)
+		if _, err := os.Stat(script); err != nil {
+			slog.Warn("service_apply: service not found, skipping", "cmd_id", cmd.CmdID, "name", name)
+			errs = append(errs, fmt.Sprintf("%s: not found", name))
+			continue
+		}
+
+		if enable {
+			if _, err := a.uci.ExecCmd(script, "enable"); err != nil {
+				slog.Error("service_apply: enable failed", "cmd_id", cmd.CmdID, "name", name, "err", err)
+				errs = append(errs, fmt.Sprintf("%s: enable: %v", name, err))
+				continue
+			}
+			if _, err := a.uci.ExecCmd(script, "start"); err != nil {
+				slog.Error("service_apply: start failed", "cmd_id", cmd.CmdID, "name", name, "err", err)
+				errs = append(errs, fmt.Sprintf("%s: start: %v", name, err))
+				continue
+			}
+		} else {
+			if _, err := a.uci.ExecCmd(script, "stop"); err != nil {
+				slog.Warn("service_apply: stop failed (best-effort)", "cmd_id", cmd.CmdID, "name", name, "err", err)
+			}
+			if _, err := a.uci.ExecCmd(script, "disable"); err != nil {
+				slog.Error("service_apply: disable failed", "cmd_id", cmd.CmdID, "name", name, "err", err)
+				errs = append(errs, fmt.Sprintf("%s: disable: %v", name, err))
+				continue
+			}
+		}
+		slog.Info("service_apply: applied", "cmd_id", cmd.CmdID, "name", name, "enabled", enable)
+	}
+
+	if len(errs) > 0 {
+		a.publishAck(cmd.CmdID, "error", strings.Join(errs, "; "))
+		return
+	}
+	a.publishAck(cmd.CmdID, "ok", "")
+}
