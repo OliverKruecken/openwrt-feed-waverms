@@ -159,11 +159,13 @@ func TestWatchdog_Rollback(t *testing.T) {
 
 	disconnCh := make(chan struct{})
 
+	noConfirm := make(chan struct{}) // never closed — server never sends config_confirm in this test
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.runConnectivityWatchdog("cmd-2", backup, []string{"network"}, disconnCh, nil)
+		a.runConnectivityWatchdog("cmd-2", backup, []string{"network"}, disconnCh, noConfirm)
 	}()
 
 	// Simulate connection drop before the watchdog timer expires.

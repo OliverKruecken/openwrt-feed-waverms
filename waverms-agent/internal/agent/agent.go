@@ -357,7 +357,7 @@ func (a *Agent) clearWatchdogConfirm(cmdID string) {
 func (a *Agent) signalWatchdogConfirm(cmdID string) bool {
 	a.confirmMu.Lock()
 	defer a.confirmMu.Unlock()
-	if a.confirmCmdID == cmdID && a.confirmCh != nil {
+	if a.confirmCmdID == cmdID {
 		close(a.confirmCh)
 		a.confirmCh = nil
 		a.confirmCmdID = ""
