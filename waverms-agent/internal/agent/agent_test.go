@@ -835,6 +835,11 @@ func TestHandleStateRequest_EmptyPackagesList_UsesDefaultPackages(t *testing.T) 
 }
 
 func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
+	// Shorten the watchdog so the test doesn't wait 90 s.
+	origTimeout := connectivityWatchdogTimeout
+	connectivityWatchdogTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { connectivityWatchdogTimeout = origTimeout })
+
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{
 		Results: map[string]string{
@@ -842,6 +847,10 @@ func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
 		},
 	}
 	a := newTestAgent(mock, uciMock)
+
+	// Provide a session disconnCh that never fires so the watchdog confirms connectivity.
+	disconnCh := make(chan struct{})
+	a.setSessionDisconnCh(disconnCh)
 
 	payload := `{
 		"cmd_id": "apply-ok",
@@ -855,12 +864,15 @@ func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
 	}`
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	// Should publish ack + state (apply_success).
-	require.Len(t, mock.Published, 2)
-
-	topics := []string{mock.Published[0].Topic, mock.Published[1].Topic}
-	assert.Contains(t, topics, "device/test-device-uuid/ack")
-	assert.Contains(t, topics, "device/test-device-uuid/state")
+	// State is published synchronously; ACK arrives after the watchdog confirms.
+	require.Eventually(t, func() bool {
+		mock.Published = mock.Published // read under no lock — acceptable in test
+		topics := make(map[string]bool)
+		for _, p := range mock.Published {
+			topics[p.Topic] = true
+		}
+		return topics["device/test-device-uuid/ack"] && topics["device/test-device-uuid/state"]
+	}, 500*time.Millisecond, 5*time.Millisecond)
 
 	// Find the ack message.
 	var ack AckPayload

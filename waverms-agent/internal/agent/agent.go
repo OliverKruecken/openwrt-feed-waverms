@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OliverKruecken/waverms-agent/internal/bootstrap"
@@ -259,6 +260,16 @@ type Agent struct {
 	credsPath          string
 	debugHandler       *mqttDebugHandler
 	cmdHandlers        map[string]func(Command)
+
+	// sessionMu protects sessionDisconnCh, which is set for the lifetime of
+	// each MQTT session and read by the config_apply connectivity watchdog.
+	sessionMu        sync.RWMutex
+	sessionDisconnCh <-chan struct{}
+
+	// pendingAckMu protects pendingAck, which holds a deferred ACK that must
+	// be sent on the next session start after a config_apply rollback.
+	pendingAckMu sync.Mutex
+	pendingAck   *rollbackAck
 }
 
 // New creates an Agent from the provided options.
@@ -314,6 +325,33 @@ func New(opts *Options) *Agent {
 		"tls_cert_push":    a.handleTlsCertPush,
 	}
 	return a
+}
+
+func (a *Agent) setSessionDisconnCh(ch <-chan struct{}) {
+	a.sessionMu.Lock()
+	a.sessionDisconnCh = ch
+	a.sessionMu.Unlock()
+}
+
+func (a *Agent) getSessionDisconnCh() <-chan struct{} {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	return a.sessionDisconnCh
+}
+
+func (a *Agent) setPendingRollbackAck(ack *rollbackAck) {
+	a.pendingAckMu.Lock()
+	a.pendingAck = ack
+	a.pendingAckMu.Unlock()
+}
+
+// takePendingRollbackAck atomically reads and clears the pending rollback ACK.
+func (a *Agent) takePendingRollbackAck() *rollbackAck {
+	a.pendingAckMu.Lock()
+	defer a.pendingAckMu.Unlock()
+	ack := a.pendingAck
+	a.pendingAck = nil
+	return ack
 }
 
 // Run is the main entry point. It bootstraps if needed, then enters the
@@ -464,6 +502,14 @@ func (a *Agent) runSession(ctx context.Context) error {
 	defer ticker.Stop()
 
 	disconnCh := a.mqtt.Disconnected()
+	a.setSessionDisconnCh(disconnCh)
+	defer a.setSessionDisconnCh(nil)
+
+	// Send a deferred rollback ACK if a previous config_apply was rolled back
+	// because connectivity was lost before the watchdog confirmed the apply.
+	if ack := a.takePendingRollbackAck(); ack != nil {
+		a.publishAck(ack.cmdID, ack.status, ack.output)
+	}
 
 	for {
 		select {
@@ -475,6 +521,11 @@ func (a *Agent) runSession(ctx context.Context) error {
 		case <-ticker.C:
 			if err := a.publishInfo(ctx); err != nil {
 				slog.Error("heartbeat failed", "err", err)
+			}
+			// Safety net: send a rollback ACK that was set after session start
+			// (e.g. when the rollback goroutine races with a fast reconnect).
+			if ack := a.takePendingRollbackAck(); ack != nil {
+				a.publishAck(ack.cmdID, ack.status, ack.output)
 			}
 		}
 	}

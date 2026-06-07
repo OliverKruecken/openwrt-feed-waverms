@@ -54,6 +54,27 @@ func (a *Agent) handleUCISet(cmd Command) {
 }
 
 func (a *Agent) handleConfigApply(cmd Command) {
+	// Extract package names so we can backup before applying.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(cmd.Payload, &raw); err != nil {
+		slog.Error("config_apply: unmarshal payload", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+	var pkgNames []string
+	for k := range raw {
+		if k != "packages" && k != "reboot" {
+			pkgNames = append(pkgNames, k)
+		}
+	}
+
+	backup, err := backupConfigFiles(pkgNames)
+	if err != nil {
+		slog.Error("config_apply: backup failed", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("backup failed: %v", err))
+		return
+	}
+
 	applier := apply.New(a.uci)
 	committed, err := applier.Apply(cmd.Payload)
 	if err != nil {
@@ -61,16 +82,21 @@ func (a *Agent) handleConfigApply(cmd Command) {
 		a.publishAck(cmd.CmdID, "error", err.Error())
 		return
 	}
-	slog.Info("config_apply succeeded", "cmd_id", cmd.CmdID, "packages", committed)
+	slog.Info("config_apply succeeded, starting connectivity watchdog", "cmd_id", cmd.CmdID, "packages", committed, "watchdog", connectivityWatchdogTimeout)
+
 	if reloadErrs := apply.RunReloads(committed); len(reloadErrs) > 0 {
 		slog.Warn("config_apply: service reload failures", "errors", strings.Join(reloadErrs, "; "))
 	}
-	a.publishAck(cmd.CmdID, "ok", "")
+
+	// ACK is deferred: the watchdog goroutine either confirms connectivity and
+	// sends ACK "ok", or rolls back the config and queues an ACK "error".
+	go a.runConnectivityWatchdog(cmd.CmdID, backup, committed, a.getSessionDisconnCh())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if err := a.publishState(ctx, "apply_success", committed); err != nil {
 		slog.Error("publish state after config_apply", "err", err)
 	}
-	cancel()
 }
 
 func (a *Agent) handleFileWrite(cmd Command) {
