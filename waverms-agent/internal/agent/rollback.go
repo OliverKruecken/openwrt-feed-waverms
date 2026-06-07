@@ -85,11 +85,12 @@ func (b configBackup) restore(packages []string) error {
 // runConnectivityWatchdog is the commit-confirm watchdog for config_apply.
 //
 // After a successful apply, this goroutine waits for connectivityWatchdogTimeout.
-// If the MQTT connection remains alive for the full window, the apply is
-// confirmed and an ACK "ok" is published. If disconnCh fires first (the
-// connection is lost), the backup is restored so the device returns to its
-// previous working state, and a rollback ACK is queued for the next session.
-func (a *Agent) runConnectivityWatchdog(cmdID string, backup configBackup, packages []string, disconnCh <-chan struct{}) {
+// If the server sends config_confirm (confirmCh is closed) the apply is confirmed
+// immediately. If disconnCh fires first the backup is restored and a rollback ACK
+// is queued. If neither fires within the timeout the apply is confirmed by timeout.
+func (a *Agent) runConnectivityWatchdog(cmdID string, backup configBackup, packages []string, disconnCh <-chan struct{}, confirmCh <-chan struct{}) {
+	defer a.clearWatchdogConfirm(cmdID)
+
 	if disconnCh == nil {
 		// Session vanished between apply and watchdog start — roll back immediately.
 		slog.Warn("config_apply watchdog: no active session, rolling back", "cmd_id", cmdID)
@@ -101,6 +102,9 @@ func (a *Agent) runConnectivityWatchdog(cmdID string, backup configBackup, packa
 	defer timer.Stop()
 
 	select {
+	case <-confirmCh:
+		slog.Info("config_apply confirmed by server", "cmd_id", cmdID)
+		a.publishAck(cmdID, "ok", "")
 	case <-timer.C:
 		slog.Info("config_apply connectivity confirmed", "cmd_id", cmdID, "after", connectivityWatchdogTimeout)
 		a.publishAck(cmdID, "ok", "")

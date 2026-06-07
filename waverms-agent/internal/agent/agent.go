@@ -181,6 +181,7 @@ func isFileWritePathAllowed(path string) bool {
 var supportedCapabilities = []string{
 	"uci_set",
 	"config_apply",
+	"config_confirm",
 	"file_write",
 	"state_report",
 	"host_key_restore",
@@ -270,6 +271,13 @@ type Agent struct {
 	// be sent on the next session start after a config_apply rollback.
 	pendingAckMu sync.Mutex
 	pendingAck   *rollbackAck
+
+	// confirmMu protects the active watchdog confirm channel.
+	// When a config_apply watchdog is running, confirmCmdID and confirmCh are
+	// set. handleConfigConfirm closes confirmCh to cut the watchdog short.
+	confirmMu    sync.Mutex
+	confirmCmdID string
+	confirmCh    chan struct{}
 }
 
 // New creates an Agent from the provided options.
@@ -317,6 +325,7 @@ func New(opts *Options) *Agent {
 	a.cmdHandlers = map[string]func(Command){
 		"uci_set":          a.handleUCISet,
 		"config_apply":     a.handleConfigApply,
+		"config_confirm":   a.handleConfigConfirm,
 		"file_write":       a.handleFileWrite,
 		"host_key_restore": a.handleHostKeyRestore,
 		"host_key_remove":  a.handleHostKeyRemove,
@@ -325,6 +334,45 @@ func New(opts *Options) *Agent {
 		"tls_cert_push":    a.handleTlsCertPush,
 	}
 	return a
+}
+
+func (a *Agent) setWatchdogConfirm(cmdID string, ch chan struct{}) {
+	a.confirmMu.Lock()
+	a.confirmCmdID = cmdID
+	a.confirmCh = ch
+	a.confirmMu.Unlock()
+}
+
+func (a *Agent) clearWatchdogConfirm(cmdID string) {
+	a.confirmMu.Lock()
+	if a.confirmCmdID == cmdID {
+		a.confirmCmdID = ""
+		a.confirmCh = nil
+	}
+	a.confirmMu.Unlock()
+}
+
+// signalWatchdogConfirm closes the stored confirm channel if cmdID matches the
+// active watchdog. Returns true when the signal was delivered.
+func (a *Agent) signalWatchdogConfirm(cmdID string) bool {
+	a.confirmMu.Lock()
+	defer a.confirmMu.Unlock()
+	if a.confirmCmdID == cmdID && a.confirmCh != nil {
+		close(a.confirmCh)
+		a.confirmCh = nil
+		a.confirmCmdID = ""
+		return true
+	}
+	return false
+}
+
+// handleConfigConfirm is dispatched when the server sends a config_confirm
+// command referencing an in-flight config_apply. It signals the connectivity
+// watchdog to confirm the apply immediately instead of waiting for the timeout.
+func (a *Agent) handleConfigConfirm(cmd Command) {
+	if !a.signalWatchdogConfirm(cmd.CmdID) {
+		slog.Warn("config_confirm: no active watchdog", "cmd_id", cmd.CmdID)
+	}
 }
 
 func (a *Agent) setSessionDisconnCh(ch <-chan struct{}) {

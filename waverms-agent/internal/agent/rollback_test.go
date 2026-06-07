@@ -81,9 +81,10 @@ func TestWatchdog_Confirmed(t *testing.T) {
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
 
 	disconnCh := make(chan struct{}) // never closed → connectivity maintained
+	confirmCh := make(chan struct{}) // never closed → no server confirm
 	backup := configBackup{data: map[string][]byte{}}
 
-	a.runConnectivityWatchdog("cmd-1", backup, nil, disconnCh)
+	a.runConnectivityWatchdog("cmd-1", backup, nil, disconnCh, confirmCh)
 
 	// ACK "ok" must have been published.
 	require.Len(t, mock.Published, 1)
@@ -93,6 +94,42 @@ func TestWatchdog_Confirmed(t *testing.T) {
 	assert.Equal(t, "ok", ack.Status)
 
 	// No pending rollback ACK.
+	assert.Nil(t, a.takePendingRollbackAck())
+}
+
+// TestWatchdog_ConfirmedByServer verifies that closing confirmCh cuts the watchdog
+// short and publishes ACK "ok" without waiting for the full timeout.
+func TestWatchdog_ConfirmedByServer(t *testing.T) {
+	origTimeout := connectivityWatchdogTimeout
+	connectivityWatchdogTimeout = 10 * time.Second // long — we close confirmCh first
+	t.Cleanup(func() { connectivityWatchdogTimeout = origTimeout })
+
+	origDir := uciConfigDir
+	uciConfigDir = t.TempDir()
+	t.Cleanup(func() { uciConfigDir = origDir })
+
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	disconnCh := make(chan struct{}) // never closed
+	confirmCh := make(chan struct{})
+	backup := configBackup{data: map[string][]byte{}}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.runConnectivityWatchdog("cmd-confirm", backup, nil, disconnCh, confirmCh)
+	}()
+
+	close(confirmCh)
+	wg.Wait()
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "cmd-confirm", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
 	assert.Nil(t, a.takePendingRollbackAck())
 }
 
@@ -126,7 +163,7 @@ func TestWatchdog_Rollback(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.runConnectivityWatchdog("cmd-2", backup, []string{"network"}, disconnCh)
+		a.runConnectivityWatchdog("cmd-2", backup, []string{"network"}, disconnCh, nil)
 	}()
 
 	// Simulate connection drop before the watchdog timer expires.
@@ -161,7 +198,7 @@ func TestWatchdog_NilDisconnCh(t *testing.T) {
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
 
 	backup := configBackup{data: map[string][]byte{}}
-	a.runConnectivityWatchdog("cmd-3", backup, nil, nil)
+	a.runConnectivityWatchdog("cmd-3", backup, nil, nil, nil)
 
 	ack := a.takePendingRollbackAck()
 	require.NotNil(t, ack)

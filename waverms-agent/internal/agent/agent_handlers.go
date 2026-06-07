@@ -88,9 +88,14 @@ func (a *Agent) handleConfigApply(cmd Command) {
 		slog.Warn("config_apply: service reload failures", "errors", strings.Join(reloadErrs, "; "))
 	}
 
+	// Register the confirm channel before publishing state so the server-sent
+	// config_confirm cannot arrive before the watchdog is ready to receive it.
+	confirmCh := make(chan struct{})
+	a.setWatchdogConfirm(cmd.CmdID, confirmCh)
+
 	// ACK is deferred: the watchdog goroutine either confirms connectivity and
 	// sends ACK "ok", or rolls back the config and queues an ACK "error".
-	go a.runConnectivityWatchdog(cmd.CmdID, backup, committed, a.getSessionDisconnCh())
+	go a.runConnectivityWatchdog(cmd.CmdID, backup, committed, a.getSessionDisconnCh(), confirmCh)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
