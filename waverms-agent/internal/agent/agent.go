@@ -414,9 +414,28 @@ func (a *Agent) Run(ctx context.Context) error {
 			OpenWrtVersion: a.openwrtVersion,
 			AgentVersion:   a.version,
 		}
-		resp, err := bootstrap.Run(ctx, a.cfg, bopts, a.mqtt)
-		if err != nil {
-			return fmt.Errorf("bootstrap failed: %w", err)
+		// Retry bootstrap with exponential backoff so transient DNS / network
+		// failures at startup (e.g. dnsmasq not ready yet) don't crash the
+		// process and exhaust procd's respawn limit.
+		bDelay := 5 * time.Second
+		const bMaxDelay = 5 * time.Minute
+		var resp *bootstrap.BootstrapResponse
+		for {
+			var err error
+			resp, err = bootstrap.Run(ctx, a.cfg, bopts, a.mqtt)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			slog.Info("bootstrap failed, retrying", "err", err, "delay", bDelay)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(bDelay):
+			}
+			bDelay = min(bDelay*2, bMaxDelay)
 		}
 		// Bootstrap uses the shared MQTT client for its temporary connection.
 		// Disconnect it explicitly now so the TCP socket is released before
