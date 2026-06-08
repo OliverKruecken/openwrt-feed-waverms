@@ -39,6 +39,11 @@ func TopicStateRequest(deviceID string) string {
 	return fmt.Sprintf("device/%s/state/request", deviceID)
 }
 
+// TopicInfoRequest returns the topic the server publishes on-demand info/heartbeat requests to.
+func TopicInfoRequest(deviceID string) string {
+	return fmt.Sprintf("device/%s/info/request", deviceID)
+}
+
 // TopicState returns the topic the agent publishes actual UCI state reports to.
 func TopicState(deviceID string) string {
 	return fmt.Sprintf("device/%s/state", deviceID)

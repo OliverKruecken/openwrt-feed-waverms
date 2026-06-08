@@ -597,6 +597,12 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 	slog.Debug("subscribed", "topic", stateReqTopic)
 
+	infoReqTopic := mqttclient.TopicInfoRequest(a.creds.DeviceID)
+	if err := subscribeOrDisconnect(infoReqTopic, 1, a.handleInfoRequest); err != nil {
+		return fmt.Errorf("subscribe info/request: %w", err)
+	}
+	slog.Debug("subscribed", "topic", infoReqTopic)
+
 	controlTopic := mqttclient.TopicDebugControl(a.creds.DeviceID)
 	if err := subscribeOrDisconnect(controlTopic, 1, a.handleDebugControl); err != nil {
 		return fmt.Errorf("subscribe debug/control: %w", err)
@@ -732,6 +738,16 @@ func (a *Agent) publishAckKeys(cmdID string, keys map[string][]byte) {
 	defer cancel()
 	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
 		slog.Error("publish ack keys", "cmd_id", cmdID, "err", err)
+	}
+}
+
+// handleInfoRequest processes an incoming info/request message by publishing a fresh heartbeat.
+func (a *Agent) handleInfoRequest(_ string, _ []byte) {
+	slog.Debug("info request received — publishing fresh heartbeat")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.publishInfo(ctx); err != nil {
+		slog.Error("publish info on request", "err", err)
 	}
 }
 
