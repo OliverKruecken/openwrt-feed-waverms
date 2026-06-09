@@ -609,6 +609,12 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 	slog.Debug("subscribed", "topic", controlTopic)
 
+	// Clear the retained "offline" LWT so a restarting server does not receive a
+	// stale offline status for a device that is actually online.
+	if err := a.mqtt.Publish(ctx, mqttclient.TopicStatus(a.creds.DeviceID), []byte{}, 1, true); err != nil {
+		slog.Warn("failed to clear retained status", "err", err)
+	}
+
 	if err := a.publishInfo(ctx); err != nil {
 		slog.Error("initial heartbeat failed", "err", err)
 	}
