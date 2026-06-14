@@ -2,11 +2,14 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1535,4 +1538,64 @@ func TestPublishInfo_CapabilitiesContainTlsCertPush(t *testing.T) {
 	var info InfoPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
 	assert.Contains(t, info.Capabilities, "tls_cert_push")
+}
+
+// ── hostKeyFingerprints ────────────────────────────────────────────────────────
+
+func TestHostKeyFingerprints_ReturnsHexSHA256ForExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("fake-ed25519-key-content")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dropbear_ed25519_host_key"), content, 0600))
+
+	fps := hostKeyFingerprints(map[string]bool{"dropbear_ed25519_host_key": true}, dir)
+
+	require.Len(t, fps, 1)
+	sum := sha256.Sum256(content)
+	assert.Equal(t, hex.EncodeToString(sum[:]), fps["dropbear_ed25519_host_key"])
+}
+
+func TestHostKeyFingerprints_OmitsMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Only ed25519 key exists; rsa is absent.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dropbear_ed25519_host_key"), []byte("ed25519"), 0600))
+
+	fps := hostKeyFingerprints(map[string]bool{
+		"dropbear_ed25519_host_key": true,
+		"dropbear_rsa_host_key":     true,
+	}, dir)
+
+	assert.Contains(t, fps, "dropbear_ed25519_host_key")
+	assert.NotContains(t, fps, "dropbear_rsa_host_key")
+}
+
+func TestHostKeyFingerprints_ReturnsNilWhenNoFilesExist(t *testing.T) {
+	fps := hostKeyFingerprints(map[string]bool{"dropbear_ed25519_host_key": true}, t.TempDir())
+	assert.Nil(t, fps)
+}
+
+func TestPublishInfo_IncludesHostKeyFingerprints(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("fake-key-bytes")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dropbear_ed25519_host_key"), content, 0600))
+
+	mqttMock := mqttclient.NewMockMQTTClient()
+	daemon := sshDaemonInfo{Name: "dropbear", Dir: dir, Service: "/etc/init.d/dropbear"}
+	a := New(&Options{
+		Config:     &config.Config{HeartbeatInterval: 60},
+		Creds:      &config.Credentials{DeviceID: "test-device-uuid", Secret: "s"},
+		MAC:        "aa:bb:cc:dd:ee:ff",
+		MQTT:       mqttMock,
+		UCI:        &uci.MockUCIRunner{},
+		FileAccess: &filewriter.MockFileAccess{},
+		Version:    "1.0.0",
+		SSHDaemon:  &daemon,
+	})
+
+	require.NoError(t, a.publishInfo(context.Background()))
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mqttMock.Published[0].Payload, &info))
+
+	sum := sha256.Sum256(content)
+	assert.Equal(t, hex.EncodeToString(sum[:]), info.HostKeyFingerprints["dropbear_ed25519_host_key"])
 }

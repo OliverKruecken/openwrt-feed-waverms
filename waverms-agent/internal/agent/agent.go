@@ -3,6 +3,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -110,15 +112,35 @@ type ServiceInfo struct {
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID       string        `json:"device_id"`
-	Hostname       string        `json:"hostname"`
-	UptimeSeconds  int64         `json:"uptime_seconds"`
-	AgentVersion   string        `json:"agent_version"`
-	Model          string        `json:"model"`
-	OpenWrtVersion string        `json:"openwrt_version"`
-	Timestamp      string        `json:"timestamp"`
-	Capabilities   []string      `json:"capabilities"`
-	Services       []ServiceInfo `json:"services,omitempty"`
+	DeviceID            string            `json:"device_id"`
+	Hostname            string            `json:"hostname"`
+	UptimeSeconds       int64             `json:"uptime_seconds"`
+	AgentVersion        string            `json:"agent_version"`
+	Model               string            `json:"model"`
+	OpenWrtVersion      string            `json:"openwrt_version"`
+	Timestamp           string            `json:"timestamp"`
+	Capabilities        []string          `json:"capabilities"`
+	Services            []ServiceInfo     `json:"services,omitempty"`
+	HostKeyFingerprints map[string]string `json:"host_key_fingerprints,omitempty"` // filename → lowercase hex SHA-256
+}
+
+// hostKeyFingerprints returns a map of filename → lowercase hex SHA-256 for each
+// allowed host key file that currently exists in dir. Files that cannot be read
+// (missing or permission error) are silently omitted.
+func hostKeyFingerprints(allowedNames map[string]bool, dir string) map[string]string {
+	out := make(map[string]string, len(allowedNames))
+	for name := range allowedNames {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(data)
+		out[name] = hex.EncodeToString(sum[:])
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // allowedUCISubcmds is the set of UCI subcommands that uci_set is permitted to
@@ -669,15 +691,16 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 	caps := append(supportedCapabilities, "ssh_daemon:"+a.sshDaemon.Name)
 	services := discoverServices(a.uci, a.initdDir)
 	info := InfoPayload{
-		DeviceID:       a.creds.DeviceID,
-		Hostname:       hostname,
-		UptimeSeconds:  uptime,
-		AgentVersion:   a.version,
-		Model:          a.model,
-		OpenWrtVersion: a.openwrtVersion,
-		Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		Capabilities:   caps,
-		Services:       services,
+		DeviceID:            a.creds.DeviceID,
+		Hostname:            hostname,
+		UptimeSeconds:       uptime,
+		AgentVersion:        a.version,
+		Model:               a.model,
+		OpenWrtVersion:      a.openwrtVersion,
+		Timestamp:           time.Now().UTC().Format(time.RFC3339),
+		Capabilities:        caps,
+		Services:            services,
+		HostKeyFingerprints: hostKeyFingerprints(allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name], a.sshDaemon.Dir),
 	}
 
 	payload, err := json.Marshal(info)
