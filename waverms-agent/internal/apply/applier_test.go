@@ -464,3 +464,50 @@ func TestServiceReloads_NoDuplicates(t *testing.T) {
 	cmds := apply.ServiceReloads([]string{"wireless", "wireless"})
 	assert.Len(t, cmds, 1)
 }
+
+func TestApply_ReplaceMode_DeletesAnonSectionsInReverseOrder(t *testing.T) {
+	// Simulates the production failure: network has @bridge-vlan[0..2] but
+	// desired config has no bridge-vlan sections. Without reverse-order deletion,
+	// removing @bridge-vlan[0] shifts [1]→[0] and [2]→[1], so the subsequent
+	// delete of @bridge-vlan[2] fails because the index no longer exists.
+	mock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"show network": strings.Join([]string{
+				"network.@bridge-vlan[0]=bridge-vlan",
+				"network.@bridge-vlan[0].device='br-lan'",
+				"network.@bridge-vlan[1]=bridge-vlan",
+				"network.@bridge-vlan[1].device='br-lan'",
+				"network.@bridge-vlan[2]=bridge-vlan",
+				"network.@bridge-vlan[2].device='br-lan'",
+			}, "\n"),
+		},
+	}
+	a := apply.New(mock)
+
+	// bridge-vlan is in the desired config as an empty list so replace mode
+	// calls deleteUnwantedSections for that type and removes all three sections.
+	cfg := `{
+  "network": {
+    ".mode": "replace",
+    "bridge-vlan": [],
+    "interface": [{ ".name": "loopback", "proto": "static" }]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	// Extract only the bridge-vlan delete calls in the order they were issued.
+	var deleteCalls []string
+	for _, c := range mock.Calls {
+		if strings.HasPrefix(c, "delete network.@bridge-vlan") {
+			deleteCalls = append(deleteCalls, c)
+		}
+	}
+
+	// Deletions must be issued highest-index-first to avoid index shifting.
+	require.Equal(t, []string{
+		"delete network.@bridge-vlan[2]",
+		"delete network.@bridge-vlan[1]",
+		"delete network.@bridge-vlan[0]",
+	}, deleteCalls)
+}

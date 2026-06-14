@@ -181,6 +181,9 @@ func (a *Applier) listUnnamedSections(pkgName, sectionType string) []string {
 
 // deleteUnwantedSections deletes all current sections of sectionType in pkgName that are
 // not listed in keepNames. Uses `uci show` to enumerate existing sections.
+//
+// Anonymous sections (@type[N]) are deleted in reverse index order so that earlier
+// deletions do not shift the indices of sections still to be deleted.
 func (a *Applier) deleteUnwantedSections(pkgName, sectionType string, keepNames map[string]bool) error {
 	out, err := a.runner.Show(pkgName)
 	if err != nil {
@@ -188,6 +191,7 @@ func (a *Applier) deleteUnwantedSections(pkgName, sectionType string, keepNames 
 		return nil
 	}
 	prefix := pkgName + "."
+	var toDelete []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, prefix) {
@@ -208,9 +212,15 @@ func (a *Applier) deleteUnwantedSections(pkgName, sectionType string, keepNames 
 			continue
 		}
 		if !keepNames[sectionID] {
-			if err := a.runner.Delete(pkgName, sectionID); err != nil {
-				return fmt.Errorf("delete %s.%s: %w", pkgName, sectionID, err)
-			}
+			toDelete = append(toDelete, sectionID)
+		}
+	}
+	// Delete in reverse order: removing @type[0] would shift @type[1] → @type[0],
+	// invalidating all subsequent index-based references. Deleting from the highest
+	// index downward keeps lower indices stable throughout.
+	for i := len(toDelete) - 1; i >= 0; i-- {
+		if err := a.runner.Delete(pkgName, toDelete[i]); err != nil {
+			return fmt.Errorf("delete %s.%s: %w", pkgName, toDelete[i], err)
 		}
 	}
 	return nil
