@@ -14,7 +14,7 @@ import (
 // connectivityWatchdogTimeout is how long the agent waits for a confirmed
 // MQTT connection after a config_apply before treating the apply as successful.
 // Overridden in tests to a short value.
-var connectivityWatchdogTimeout = 90 * time.Second
+var connectivityWatchdogTimeout = 5 * 60 * time.Second
 
 // uciConfigDir is the directory that holds committed UCI config files.
 // Overridden in tests to a temporary directory.
