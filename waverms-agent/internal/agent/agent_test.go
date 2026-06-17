@@ -1772,7 +1772,7 @@ func TestHostKeyFingerprints_ReturnsNilWhenNoFilesExist(t *testing.T) {
 	assert.Nil(t, fps)
 }
 
-func TestPublishInfo_IncludesHostKeyFingerprints(t *testing.T) {
+func TestPublishInfo_OmitsHostKeyFingerprints(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("fake-key-bytes")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dropbear_ed25519_host_key"), content, 0600))
@@ -1792,9 +1792,5 @@ func TestPublishInfo_IncludesHostKeyFingerprints(t *testing.T) {
 
 	require.NoError(t, a.publishInfo(context.Background()))
 
-	var info InfoPayload
-	require.NoError(t, json.Unmarshal(mqttMock.Published[0].Payload, &info))
-
-	sum := sha256.Sum256(content)
-	assert.Equal(t, hex.EncodeToString(sum[:]), info.HostKeyFingerprints["dropbear_ed25519_host_key"])
+	assert.NotContains(t, string(mqttMock.Published[0].Payload), "host_key_fingerprints")
 }

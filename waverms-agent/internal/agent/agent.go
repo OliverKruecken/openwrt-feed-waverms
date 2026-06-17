@@ -97,9 +97,7 @@ type StatePayload struct {
 	// blob (not the raw "type base64 comment" line text).
 	AuthorizedKeys []string `json:"authorized_keys,omitempty"`
 	// HostKeyFingerprints maps SSH host key filename -> lowercase hex SHA-256 of
-	// the raw file content. Also present on InfoPayload for now; duplicated here
-	// so the backend can migrate host-key drift detection to the state report at
-	// its own pace (see docs/agent-go.md).
+	// the raw file content.
 	HostKeyFingerprints map[string]string `json:"host_key_fingerprints,omitempty"`
 	// TLSCertFingerprint is the lowercase hex SHA-256 of the TLS certificate file
 	// currently deployed at the most recently pushed cert_path (falling back to
@@ -200,16 +198,15 @@ type ServiceInfo struct {
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID            string            `json:"device_id"`
-	Hostname            string            `json:"hostname"`
-	UptimeSeconds       int64             `json:"uptime_seconds"`
-	AgentVersion        string            `json:"agent_version"`
-	Model               string            `json:"model"`
-	OpenWrtVersion      string            `json:"openwrt_version"`
-	Timestamp           string            `json:"timestamp"`
-	Capabilities        []string          `json:"capabilities"`
-	Services            []ServiceInfo     `json:"services,omitempty"`
-	HostKeyFingerprints map[string]string `json:"host_key_fingerprints,omitempty"` // filename → lowercase hex SHA-256
+	DeviceID       string        `json:"device_id"`
+	Hostname       string        `json:"hostname"`
+	UptimeSeconds  int64         `json:"uptime_seconds"`
+	AgentVersion   string        `json:"agent_version"`
+	Model          string        `json:"model"`
+	OpenWrtVersion string        `json:"openwrt_version"`
+	Timestamp      string        `json:"timestamp"`
+	Capabilities   []string      `json:"capabilities"`
+	Services       []ServiceInfo `json:"services,omitempty"`
 }
 
 // hostKeyFingerprints returns a map of filename → lowercase hex SHA-256 for each
@@ -820,16 +817,15 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 	caps := append(supportedCapabilities, "ssh_daemon:"+a.sshDaemon.Name)
 	services := discoverServices(a.uci, a.initdDir)
 	info := InfoPayload{
-		DeviceID:            a.creds.DeviceID,
-		Hostname:            hostname,
-		UptimeSeconds:       uptime,
-		AgentVersion:        a.version,
-		Model:               a.model,
-		OpenWrtVersion:      a.openwrtVersion,
-		Timestamp:           time.Now().UTC().Format(time.RFC3339),
-		Capabilities:        caps,
-		Services:            services,
-		HostKeyFingerprints: hostKeyFingerprints(allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name], a.sshDaemon.Dir),
+		DeviceID:       a.creds.DeviceID,
+		Hostname:       hostname,
+		UptimeSeconds:  uptime,
+		AgentVersion:   a.version,
+		Model:          a.model,
+		OpenWrtVersion: a.openwrtVersion,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		Capabilities:   caps,
+		Services:       services,
 	}
 
 	payload, err := json.Marshal(info)
