@@ -17,6 +17,7 @@ BROKER_HOST=waverms.example.com
 BROKER_PORT=8883
 TLS_INSECURE=true
 HEARTBEAT_INTERVAL=30
+STATE_INTERVAL=120
 AGENT_VERSION=2.0.0
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
@@ -28,6 +29,7 @@ AGENT_VERSION=2.0.0
 	assert.Equal(t, 8883, cfg.BrokerPort)
 	assert.True(t, cfg.TLSInsecure)
 	assert.Equal(t, 30, cfg.HeartbeatInterval)
+	assert.Equal(t, 120, cfg.StateInterval)
 	assert.Equal(t, "2.0.0", cfg.AgentVersion)
 }
 
@@ -37,6 +39,7 @@ func TestLoad_Defaults_OnMissingFile(t *testing.T) {
 
 	assert.Equal(t, defaultBrokerPort, cfg.BrokerPort)
 	assert.Equal(t, defaultHeartbeatInterval, cfg.HeartbeatInterval)
+	assert.Equal(t, defaultStateInterval, cfg.StateInterval)
 	assert.False(t, cfg.TLSInsecure)
 }
 
@@ -51,6 +54,7 @@ func TestLoad_Defaults_OnMissingKeys(t *testing.T) {
 	assert.Equal(t, "srv", cfg.BrokerHost)
 	assert.Equal(t, defaultBrokerPort, cfg.BrokerPort)
 	assert.Equal(t, defaultHeartbeatInterval, cfg.HeartbeatInterval)
+	assert.Equal(t, defaultStateInterval, cfg.StateInterval)
 }
 
 func TestLoad_InvalidPort_IgnoredUsesDefault(t *testing.T) {

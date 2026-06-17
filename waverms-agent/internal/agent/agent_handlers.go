@@ -153,6 +153,7 @@ func (a *Agent) handleFileWrite(cmd Command) {
 	}
 	slog.Info("file_write succeeded", "cmd_id", cmd.CmdID, "path", fwPayload.Path)
 	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("file_write")
 }
 
 func (a *Agent) handleHostKeyRestore(cmd Command) {
@@ -191,6 +192,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 	}
 	slog.Info("host_key_restore succeeded", "cmd_id", cmd.CmdID, "files", len(hkPayload.Keys))
 	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("host_key_restore")
 }
 
 func (a *Agent) handleHostKeyRemove(cmd Command) {
@@ -211,6 +213,7 @@ func (a *Agent) handleHostKeyRemove(cmd Command) {
 	}
 	slog.Info("host_key_remove succeeded", "cmd_id", cmd.CmdID, "removed", removed)
 	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("host_key_remove")
 }
 
 type setPasswordPayload struct {
@@ -241,6 +244,7 @@ func (a *Agent) handleSetPassword(cmd Command) {
 	}
 	slog.Info("set_password succeeded", "cmd_id", cmd.CmdID, "target", p.Target)
 	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("set_password")
 }
 
 func (a *Agent) handleHostKeyFetch(cmd Command) {
@@ -321,8 +325,11 @@ func (a *Agent) handleTlsCertPush(cmd Command) {
 		slog.Warn("tls_cert_push: service restart failed (best-effort)", "cmd_id", cmd.CmdID, "service", svc, "err", err)
 	}
 
+	a.setTLSCertPath(p.CertPath)
+
 	slog.Info("tls_cert_push succeeded", "cmd_id", cmd.CmdID, "cert_path", p.CertPath, "key_path", p.KeyPath)
 	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("tls_cert_push")
 }
 
 // isTlsCertPathAllowed validates that the path starts with /etc/ or /tmp/ after cleaning.

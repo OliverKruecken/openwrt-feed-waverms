@@ -16,6 +16,7 @@ type Config struct {
 	BrokerPort        int
 	TLSInsecure       bool
 	HeartbeatInterval int
+	StateInterval     int
 	AgentVersion      string
 	Debug             bool
 }
@@ -23,6 +24,7 @@ type Config struct {
 const (
 	defaultBrokerPort        = 8883
 	defaultHeartbeatInterval = 60
+	defaultStateInterval     = 600
 )
 
 // Load reads the config file at path and returns a Config.
@@ -31,6 +33,7 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		BrokerPort:        defaultBrokerPort,
 		HeartbeatInterval: defaultHeartbeatInterval,
+		StateInterval:     defaultStateInterval,
 		AgentVersion:      "1.0.0",
 	}
 
@@ -72,6 +75,10 @@ func Load(path string) (*Config, error) {
 		case "HEARTBEAT_INTERVAL":
 			if v, err := strconv.Atoi(value); err == nil {
 				cfg.HeartbeatInterval = v
+			}
+		case "STATE_INTERVAL":
+			if v, err := strconv.Atoi(value); err == nil {
+				cfg.StateInterval = v
 			}
 		case "AGENT_VERSION":
 			cfg.AgentVersion = value

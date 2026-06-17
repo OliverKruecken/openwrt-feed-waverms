@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -85,12 +86,99 @@ type StateRequestPayload struct {
 
 // StatePayload is published to device/{id}/state.
 type StatePayload struct {
-	Timestamp string                                          `json:"timestamp"`
-	Trigger   string                                          `json:"trigger"`
+	Timestamp string                                         `json:"timestamp"`
+	Trigger   string                                         `json:"trigger"`
 	Packages  map[string]map[string][]map[string]interface{} `json:"packages"`
 	// RawFiles contains the verbatim content of /etc/config/<pkg> for each package,
 	// preserving comments and formatting that uci export strips.
 	RawFiles map[string]string `json:"raw_files,omitempty"`
+	// AuthorizedKeys holds one lowercase-hex SHA-256 fingerprint per public key
+	// currently installed in authorizedKeysPath, computed over the decoded key
+	// blob (not the raw "type base64 comment" line text).
+	AuthorizedKeys []string `json:"authorized_keys,omitempty"`
+	// HostKeyFingerprints maps SSH host key filename -> lowercase hex SHA-256 of
+	// the raw file content. Also present on InfoPayload for now; duplicated here
+	// so the backend can migrate host-key drift detection to the state report at
+	// its own pace (see docs/agent-go.md).
+	HostKeyFingerprints map[string]string `json:"host_key_fingerprints,omitempty"`
+	// TLSCertFingerprint is the lowercase hex SHA-256 of the TLS certificate file
+	// currently deployed at the most recently pushed cert_path (falling back to
+	// defaultTLSCertPath if no tls_cert_push has succeeded this session). Empty
+	// when no readable cert file is found.
+	TLSCertFingerprint string `json:"tls_cert_fingerprint,omitempty"`
+	// PasswordHash is the root user's current /etc/shadow hash field. Empty when
+	// /etc/shadow cannot be read.
+	PasswordHash string `json:"password_hash,omitempty"`
+}
+
+// authorizedKeysPath is where SSH public keys are distributed (file_write),
+// matching the backend's hardcoded SshKeyService.AUTHORIZED_KEYS_PATH.
+const authorizedKeysPath = "/etc/dropbear/authorized_keys"
+
+// defaultTLSCertPath is used to look up the deployed cert's fingerprint when no
+// tls_cert_push has succeeded yet this session (e.g. right after a restart).
+// Matches TlsCertService.DEFAULT_CERT_PATH on the backend.
+const defaultTLSCertPath = "/etc/uhttpd.crt"
+
+// authorizedKeyFingerprints reads authorizedKeysPath via fw and returns one
+// lowercase-hex SHA-256 fingerprint per valid key line. Malformed lines and a
+// missing file are silently skipped/ignored.
+func authorizedKeyFingerprints(fw filewriter.FileAccess) []string {
+	data, err := fw.ReadFile(authorizedKeysPath)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		blob, err := base64.StdEncoding.DecodeString(fields[1])
+		if err != nil {
+			continue
+		}
+		sum := sha256.Sum256(blob)
+		out = append(out, hex.EncodeToString(sum[:]))
+	}
+	return out
+}
+
+// rootPasswordHash reads the root user's hash field from /etc/shadow via
+// a.fileAccess. Returns "" when the file cannot be read or root has no entry.
+func (a *Agent) rootPasswordHash() string {
+	data, err := a.fileAccess.ReadFile("/etc/shadow")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) >= 2 && fields[0] == "root" {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+// tlsCertFingerprint returns the lowercase-hex SHA-256 of the deployed TLS
+// cert file, read from the most recently pushed cert_path (or
+// defaultTLSCertPath if none was pushed this session). Returns "" when the
+// file cannot be read.
+func (a *Agent) tlsCertFingerprint() string {
+	path := a.getTLSCertPath()
+	if path == "" {
+		path = defaultTLSCertPath
+	}
+	data, err := a.fileAccess.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // AckPayload is published to device/{id}/ack after command execution.
@@ -343,6 +431,36 @@ type Agent struct {
 	confirmMu    sync.Mutex
 	confirmCmdID string
 	confirmCh    chan struct{}
+
+	// tlsCertMu protects tlsCertPath, the cert_path of the most recently
+	// successful tls_cert_push this session. Used by tlsCertFingerprint to
+	// know which file to read for the state report.
+	tlsCertMu   sync.RWMutex
+	tlsCertPath string
+}
+
+func (a *Agent) setTLSCertPath(path string) {
+	a.tlsCertMu.Lock()
+	a.tlsCertPath = path
+	a.tlsCertMu.Unlock()
+}
+
+func (a *Agent) getTLSCertPath() string {
+	a.tlsCertMu.RLock()
+	defer a.tlsCertMu.RUnlock()
+	return a.tlsCertPath
+}
+
+// publishStateAfterSuccess re-publishes the full state report after a command
+// that mutates a state-report dimension (SSH keys, host keys, TLS cert,
+// password) succeeds, so the backend can confirm the change landed without
+// waiting for the next heartbeat or periodic state publish.
+func (a *Agent) publishStateAfterSuccess(trigger string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := a.publishState(ctx, trigger, nil); err != nil {
+		slog.Warn("publish state after command", "trigger", trigger, "err", err)
+	}
 }
 
 // New creates an Agent from the provided options.
@@ -652,6 +770,13 @@ func (a *Agent) runSession(ctx context.Context) error {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
+	stateInterval := time.Duration(a.cfg.StateInterval) * time.Second
+	if stateInterval <= 0 {
+		stateInterval = 10 * time.Minute
+	}
+	stateTicker := time.NewTicker(stateInterval)
+	defer stateTicker.Stop()
+
 	disconnCh := a.mqtt.Disconnected()
 	a.setSessionDisconnCh(disconnCh)
 	defer a.setSessionDisconnCh(nil)
@@ -677,6 +802,10 @@ func (a *Agent) runSession(ctx context.Context) error {
 			// (e.g. when the rollback goroutine races with a fast reconnect).
 			if ack := a.takePendingRollbackAck(); ack != nil {
 				a.publishAck(ack.cmdID, ack.status, ack.output)
+			}
+		case <-stateTicker.C:
+			if err := a.publishState(ctx, "periodic", nil); err != nil {
+				slog.Error("periodic state publish failed", "err", err)
 			}
 		}
 	}
@@ -841,10 +970,14 @@ func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string)
 	}
 
 	state := StatePayload{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Trigger:   trigger,
-		Packages:  packages,
-		RawFiles:  rawFiles,
+		Timestamp:           time.Now().UTC().Format(time.RFC3339),
+		Trigger:             trigger,
+		Packages:            packages,
+		RawFiles:            rawFiles,
+		AuthorizedKeys:      authorizedKeyFingerprints(a.fileAccess),
+		HostKeyFingerprints: hostKeyFingerprints(allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name], a.sshDaemon.Dir),
+		TLSCertFingerprint:  a.tlsCertFingerprint(),
+		PasswordHash:        a.rootPasswordHash(),
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -878,4 +1011,3 @@ func readUptimeSeconds() int64 {
 	fmt.Sscanf(parts[0], "%f", &secs)
 	return int64(secs)
 }
-

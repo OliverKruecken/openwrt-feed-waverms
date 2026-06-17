@@ -140,12 +140,13 @@ func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T
 	// Dropbear must have been restarted
 	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/dropbear restart")
 
-	// Ack must be "ok"
-	require.Len(t, mock.Published, 1)
+	// Ack must be "ok", followed by a state report confirming the change.
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "hkr-1", ack.CmdID)
 	assert.Equal(t, "ok", ack.Status)
+	assert.Equal(t, "device/test-device-uuid/state", mock.Published[1].Topic)
 }
 
 func TestHandleCommand_HostKeyRestore_PathTraversalGuard(t *testing.T) {
@@ -214,14 +215,14 @@ func TestHandleCommand_HostKeyRestore_OpenSSH_RejectDropbearFilename(t *testing.
 	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
 	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
 	a := New(&Options{
-		Config:    cfg,
-		Creds:     creds,
-		MAC:       "aa:bb:cc:dd:ee:ff",
-		MQTT:      mock,
-		UCI:       &uci.MockUCIRunner{},
+		Config:     cfg,
+		Creds:      creds,
+		MAC:        "aa:bb:cc:dd:ee:ff",
+		MQTT:       mock,
+		UCI:        &uci.MockUCIRunner{},
 		FileAccess: fw,
-		Version:   "1.0.0",
-		SSHDaemon: &daemonOpenSSH,
+		Version:    "1.0.0",
+		SSHDaemon:  &daemonOpenSSH,
 	})
 
 	// Dropbear-specific filename must be rejected on an OpenSSH device.
@@ -296,7 +297,7 @@ func TestHandleCommand_HostKeyRestore_DropbearRestartFailure_StillAcksOk(t *test
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
 	// Dropbear restart failure is non-fatal — ack must still be "ok"
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
@@ -315,7 +316,7 @@ func TestHandleCommand_HostKeyRemove_RemovesFilesAndRestartsService(t *testing.T
 	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/dropbear restart")
 
 	// Ack must be "ok" — removal is best-effort.
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "hkrem-1", ack.CmdID)
@@ -335,7 +336,7 @@ func TestHandleCommand_HostKeyRemove_ServiceRestartFailure_StillAcksOk(t *testin
 	payload := `{"cmd_id":"hkrem-rfail","type":"host_key_remove","payload":{}}`
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
@@ -348,14 +349,14 @@ func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing
 	cfg := &config.Config{BrokerHost: "broker.local", BrokerPort: 8883, HeartbeatInterval: 60}
 	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
 	a := New(&Options{
-		Config:    cfg,
-		Creds:     creds,
-		MAC:       "aa:bb:cc:dd:ee:ff",
-		MQTT:      mock,
-		UCI:       uciMock,
+		Config:     cfg,
+		Creds:      creds,
+		MAC:        "aa:bb:cc:dd:ee:ff",
+		MQTT:       mock,
+		UCI:        uciMock,
 		FileAccess: fw,
-		Version:   "1.0.0",
-		SSHDaemon: &daemonOpenSSH,
+		Version:    "1.0.0",
+		SSHDaemon:  &daemonOpenSSH,
 	})
 
 	payload := `{"cmd_id":"hkrem-openssh","type":"host_key_remove","payload":{}}`
@@ -363,7 +364,7 @@ func TestHandleCommand_HostKeyRemove_OpenSSH_UsesCorrectDirAndService(t *testing
 
 	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/sshd restart")
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
@@ -987,6 +988,145 @@ func TestPublishState_ConnectTrigger(t *testing.T) {
 	assert.NotEmpty(t, state.Timestamp)
 }
 
+// ---- unified state report: authorized_keys / password_hash / tls_cert_fingerprint --------
+
+func TestAuthorizedKeyFingerprints_ValidKeys_ReturnsOneFingerprintPerKey(t *testing.T) {
+	// "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"
+	const pubKeyB64 = "AAAAC3NzaC1lZDI1NTE5AAAA"
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			authorizedKeysPath: []byte("ssh-ed25519 " + pubKeyB64 + " comment1\n# a comment\n\nssh-ed25519 " + pubKeyB64 + " comment2\n"),
+		},
+	}
+
+	got := authorizedKeyFingerprints(fw)
+
+	require.Len(t, got, 2)
+	blob, err := base64.StdEncoding.DecodeString(pubKeyB64)
+	require.NoError(t, err)
+	sum := sha256.Sum256(blob)
+	want := hex.EncodeToString(sum[:])
+	assert.Equal(t, want, got[0])
+	assert.Equal(t, want, got[1])
+}
+
+func TestAuthorizedKeyFingerprints_MalformedLines_AreSkipped(t *testing.T) {
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			authorizedKeysPath: []byte("not-enough-fields\nssh-ed25519 not!valid!base64\n"),
+		},
+	}
+
+	got := authorizedKeyFingerprints(fw)
+
+	assert.Empty(t, got)
+}
+
+func TestAuthorizedKeyFingerprints_MissingFile_ReturnsNil(t *testing.T) {
+	fw := &filewriter.MockFileAccess{}
+
+	got := authorizedKeyFingerprints(fw)
+
+	assert.Nil(t, got)
+}
+
+func TestRootPasswordHash_PresentEntry_ReturnsHashField(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			"/etc/shadow": []byte("root:$6$saltsalt$hashhash:19000:0:99999:7:::\nuser:!:19000:0:99999:7:::\n"),
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	assert.Equal(t, "$6$saltsalt$hashhash", a.rootPasswordHash())
+}
+
+func TestRootPasswordHash_NoRootEntry_ReturnsEmpty(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			"/etc/shadow": []byte("user:!:19000:0:99999:7:::\n"),
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	assert.Empty(t, a.rootPasswordHash())
+}
+
+func TestRootPasswordHash_MissingFile_ReturnsEmpty(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, &filewriter.MockFileAccess{})
+
+	assert.Empty(t, a.rootPasswordHash())
+}
+
+func TestTlsCertFingerprint_DefaultPath_UsedWhenNoPushYet(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	certBytes := []byte("fake-cert-bytes")
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			defaultTLSCertPath: certBytes,
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+
+	sum := sha256.Sum256(certBytes)
+	assert.Equal(t, hex.EncodeToString(sum[:]), a.tlsCertFingerprint())
+}
+
+func TestTlsCertFingerprint_PushedPath_OverridesDefault(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	certBytes := []byte("pushed-cert-bytes")
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			"/etc/uhttpd.crt": []byte("default-cert-bytes"),
+			"/tmp/custom.crt": certBytes,
+		},
+	}
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
+	a.setTLSCertPath("/tmp/custom.crt")
+
+	sum := sha256.Sum256(certBytes)
+	assert.Equal(t, hex.EncodeToString(sum[:]), a.tlsCertFingerprint())
+}
+
+func TestTlsCertFingerprint_MissingFile_ReturnsEmpty(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, &filewriter.MockFileAccess{})
+
+	assert.Empty(t, a.tlsCertFingerprint())
+}
+
+func TestPublishState_IncludesUnifiedStateReportFields(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	const pubKeyB64 = "AAAAC3NzaC1lZDI1NTE5AAAA"
+	certBytes := []byte("fake-cert-bytes")
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			authorizedKeysPath: []byte("ssh-ed25519 " + pubKeyB64 + " comment\n"),
+			defaultTLSCertPath: certBytes,
+			"/etc/shadow":      []byte("root:$6$saltsalt$hashhash:19000:0:99999:7:::\n"),
+		},
+	}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	err := a.publishState(context.Background(), "connect", []string{"system"})
+	require.NoError(t, err)
+
+	require.Len(t, mock.Published, 1)
+	var state StatePayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
+	require.Len(t, state.AuthorizedKeys, 1)
+	assert.Equal(t, "$6$saltsalt$hashhash", state.PasswordHash)
+	assert.NotEmpty(t, state.TLSCertFingerprint)
+}
+
 func TestRunSession_SubscribesStateRequest(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
@@ -1012,6 +1152,64 @@ func TestRunSession_SubscribesStateRequest(t *testing.T) {
 		"runSession must subscribe to device/{id}/state/request")
 }
 
+func TestRunSession_PublishesStatePeriodically(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	cfg := &config.Config{
+		BrokerHost:        "broker.local",
+		BrokerPort:        8883,
+		HeartbeatInterval: 60,
+		StateInterval:     1, // seconds; smallest non-zero value the agent will honor
+	}
+	creds := &config.Credentials{DeviceID: "test-device-uuid", Secret: "test-secret"}
+	a := New(&Options{
+		Config:    cfg,
+		Creds:     creds,
+		MAC:       "aa:bb:cc:dd:ee:ff",
+		MQTT:      mock,
+		UCI:       &uci.MockUCIRunner{},
+		Version:   "1.0.0",
+		SSHDaemon: &daemonDropbear,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.runSession(ctx) //nolint:errcheck
+	}()
+
+	// One state publish happens immediately on connect; wait for a second,
+	// periodic one to confirm the ticker fires.
+	require.Eventually(t, func() bool {
+		count := 0
+		for _, p := range mock.Published {
+			if p.Topic == "device/test-device-uuid/state" {
+				count++
+			}
+		}
+		return count >= 2
+	}, 3*time.Second, 10*time.Millisecond)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runSession did not stop on ctx cancel")
+	}
+
+	var triggers []string
+	for _, p := range mock.Published {
+		if p.Topic == "device/test-device-uuid/state" {
+			var state StatePayload
+			require.NoError(t, json.Unmarshal(p.Payload, &state))
+			triggers = append(triggers, state.Trigger)
+		}
+	}
+	assert.Contains(t, triggers, "connect")
+	assert.Contains(t, triggers, "periodic")
+}
+
 // ---- file_write command tests -----------------------------------------------
 
 func TestHandleCommand_FileWrite_WritesFileAndAcksOk(t *testing.T) {
@@ -1032,13 +1230,14 @@ func TestHandleCommand_FileWrite_WritesFileAndAcksOk(t *testing.T) {
 	assert.Equal(t, []byte("ssh-ed25519 AAAA..."), fw.Calls[0].Content)
 	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
 
-	// Verify ack.
-	require.Len(t, mock.Published, 1)
+	// Verify ack, followed by a state report confirming the change.
+	require.Len(t, mock.Published, 2)
 	assert.Equal(t, "device/test-device-uuid/ack", mock.Published[0].Topic)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "fw-ok", ack.CmdID)
 	assert.Equal(t, "ok", ack.Status)
+	assert.Equal(t, "device/test-device-uuid/state", mock.Published[1].Topic)
 }
 
 func TestHandleCommand_FileWrite_WriteError_AcksError(t *testing.T) {
@@ -1117,7 +1316,7 @@ func TestHandleCommand_FileWrite_CustomMode_UsesCorrectPerm(t *testing.T) {
 	require.Len(t, fw.Calls, 1)
 	assert.Equal(t, os.FileMode(0644), fw.Calls[0].Perm)
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
@@ -1139,7 +1338,7 @@ func TestHandleCommand_FileWrite_NoMode_Defaults0600(t *testing.T) {
 	require.Len(t, fw.Calls, 1)
 	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "ok", ack.Status)
@@ -1167,7 +1366,7 @@ func TestHandleCommand_FileWrite_DropbearFormat_DecodesBase64(t *testing.T) {
 	assert.Equal(t, binaryData, fw.Calls[0].Content)
 	assert.Equal(t, os.FileMode(0600), fw.Calls[0].Perm)
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "fw-dropbear", ack.CmdID)
@@ -1234,7 +1433,7 @@ func TestHandleCommand_FileWrite_AllowedPaths_AreAccepted(t *testing.T) {
 			a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
 			require.Len(t, fw.Calls, 1, "WriteFile must be called for allowed path %q", path)
-			require.Len(t, mock.Published, 1)
+			require.Len(t, mock.Published, 2)
 			var ack AckPayload
 			require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 			assert.Equal(t, "ok", ack.Status)
@@ -1393,7 +1592,7 @@ func TestHandleCommand_SetPassword_ValidHash_AcksOk(t *testing.T) {
 	payload := `{"cmd_id":"sp-1","type":"set_password","payload":{"target":"root","hash":"$6$saltsalt$hashhash"}}`
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "sp-1", ack.CmdID)
@@ -1490,7 +1689,7 @@ func TestHandleCommand_TlsCertPush_WritesFilesAndRestartsUhttpd(t *testing.T) {
 	assert.Equal(t, os.FileMode(0600), files["/etc/uhttpd.key"].Perm)
 	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/uhttpd restart")
 
-	require.Len(t, mock.Published, 1)
+	require.Len(t, mock.Published, 2)
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "tcp-1", ack.CmdID)
