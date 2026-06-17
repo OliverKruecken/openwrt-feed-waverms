@@ -752,6 +752,15 @@ func (a *Agent) runSession(ctx context.Context) error {
 		slog.Warn("failed to clear retained status", "err", err)
 	}
 
+	// Send a deferred rollback ACK before the connect-triggered state report. The
+	// backend marks the dimension apply_failed on this ACK; sending it first means
+	// the upcoming state report (which still reflects the rolled-back config) lands
+	// against an already-apply_failed status instead of re-triggering an immediate
+	// redeploy of the config that just failed.
+	if ack := a.takePendingRollbackAck(); ack != nil {
+		a.publishAck(ack.cmdID, ack.status, ack.output)
+	}
+
 	if err := a.publishInfo(ctx); err != nil {
 		slog.Error("initial heartbeat failed", "err", err)
 	}
@@ -777,12 +786,6 @@ func (a *Agent) runSession(ctx context.Context) error {
 	disconnCh := a.mqtt.Disconnected()
 	a.setSessionDisconnCh(disconnCh)
 	defer a.setSessionDisconnCh(nil)
-
-	// Send a deferred rollback ACK if a previous config_apply was rolled back
-	// because connectivity was lost before the watchdog confirmed the apply.
-	if ack := a.takePendingRollbackAck(); ack != nil {
-		a.publishAck(ack.cmdID, ack.status, ack.output)
-	}
 
 	for {
 		select {
