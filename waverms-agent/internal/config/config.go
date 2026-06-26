@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the runtime configuration for the agent.
@@ -101,4 +102,32 @@ func ReadBootstrapToken(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// bootstrapTokenPollInterval is the sleep between polls in WaitForBootstrapToken.
+// Overridden in tests to avoid slow sleeps.
+var bootstrapTokenPollInterval = 5 * time.Second
+
+// WaitForBootstrapToken polls path until a non-empty token appears or timeout
+// elapses. Use this when the token may be written by a DHCP hook after the
+// agent starts. A zero timeout is equivalent to ReadBootstrapToken (one try,
+// no wait). Poll interval is bootstrapTokenPollInterval (5 s in production).
+func WaitForBootstrapToken(path string, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		return ReadBootstrapToken(path)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if tok := strings.TrimSpace(string(data)); tok != "" {
+				return tok, nil
+			}
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", fmt.Errorf("bootstrap token not found at %s after %v", path, timeout)
+		}
+		time.Sleep(min(bootstrapTokenPollInterval, remaining))
+	}
 }

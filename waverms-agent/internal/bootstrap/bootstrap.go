@@ -46,6 +46,10 @@ type Options struct {
 	CredsPath string
 	// TmpID is the temporary correlation UUID. If empty, uuid.New() is used.
 	TmpID string
+	// TokenWaitTimeout is how long to wait for the token file to appear.
+	// Used when the token is delivered by a DHCP hook (see docs/agent-go.md).
+	// Zero means try once and return an error if the file is missing.
+	TokenWaitTimeout time.Duration
 	// Hardware fields included in the registration request.
 	MAC            string
 	AgentVersion   string
@@ -65,8 +69,8 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 		opts.TmpID = uuid.New().String()
 	}
 
-	slog.Debug("bootstrap: reading token", "path", opts.TokenPath)
-	token, err := config.ReadBootstrapToken(opts.TokenPath)
+	slog.Debug("bootstrap: reading token", "path", opts.TokenPath, "wait", opts.TokenWaitTimeout)
+	token, err := config.WaitForBootstrapToken(opts.TokenPath, opts.TokenWaitTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap token: %w", err)
 	}

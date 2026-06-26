@@ -384,6 +384,10 @@ type Options struct {
 	BootstrapOpts *bootstrap.Options
 	// BootstrapTokenPath is used if BootstrapOpts is nil. Defaults to /etc/waverms/bootstrap_token.
 	BootstrapTokenPath string
+	// BootstrapTokenWaitTimeout is how long the agent waits for the token file to
+	// appear before giving up. Defaults to 120 s, which covers slow DHCP on embedded
+	// links. Set to 0 to disable waiting (fail immediately if token is absent).
+	BootstrapTokenWaitTimeout time.Duration
 	// CredsPath is where credentials are stored. Defaults to /etc/waverms/credentials.
 	CredsPath string
 	// SSHDaemon overrides the SSH daemon detection (useful in tests). Defaults to detectSSHDaemon().
@@ -407,8 +411,9 @@ type Agent struct {
 	sshDaemon      sshDaemonInfo
 	initdDir       string
 
-	bootstrapTokenPath string
-	credsPath          string
+	bootstrapTokenPath        string
+	bootstrapTokenWaitTimeout time.Duration
+	credsPath                 string
 	debugHandler       *mqttDebugHandler
 	cmdHandlers        map[string]func(Command)
 
@@ -466,6 +471,10 @@ func New(opts *Options) *Agent {
 	if tokenPath == "" {
 		tokenPath = "/etc/waverms/bootstrap_token"
 	}
+	tokenWait := opts.BootstrapTokenWaitTimeout
+	if tokenWait == 0 {
+		tokenWait = 120 * time.Second
+	}
 	credsPath := opts.CredsPath
 	if credsPath == "" {
 		credsPath = "/etc/waverms/credentials"
@@ -505,8 +514,9 @@ func New(opts *Options) *Agent {
 		version:            opts.Version,
 		sshDaemon:          daemon,
 		initdDir:           initdDir,
-		bootstrapTokenPath: tokenPath,
-		credsPath:          credsPath,
+		bootstrapTokenPath:        tokenPath,
+		bootstrapTokenWaitTimeout: tokenWait,
+		credsPath:                 credsPath,
 	}
 	a.cmdHandlers = map[string]func(Command){
 		"uci_set":          a.handleUCISet,
@@ -594,12 +604,13 @@ func (a *Agent) takePendingRollbackAck() *rollbackAck {
 func (a *Agent) Run(ctx context.Context) error {
 	if !a.creds.HasCredentials() {
 		bopts := bootstrap.Options{
-			TokenPath:      a.bootstrapTokenPath,
-			CredsPath:      a.credsPath,
-			MAC:            a.mac,
-			Model:          a.model,
-			OpenWrtVersion: a.openwrtVersion,
-			AgentVersion:   a.version,
+			TokenPath:        a.bootstrapTokenPath,
+			CredsPath:        a.credsPath,
+			TokenWaitTimeout: a.bootstrapTokenWaitTimeout,
+			MAC:              a.mac,
+			Model:            a.model,
+			OpenWrtVersion:   a.openwrtVersion,
+			AgentVersion:     a.version,
 		}
 		// Retry bootstrap with exponential backoff so transient DNS / network
 		// failures at startup (e.g. dnsmasq not ready yet) don't crash the

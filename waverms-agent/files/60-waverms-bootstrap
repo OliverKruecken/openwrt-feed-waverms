@@ -1,0 +1,27 @@
+#!/bin/sh
+# udhcpc hook: write WaveRMS bootstrap token from DHCP option 224.
+#
+# The DHCP server must be configured to send option 224 as a plain text string
+# containing the bootstrap token for this subnet/batch. Example (dnsmasq):
+#   dhcp-option=224,"<token>"
+#
+# udhcpc passes received options as environment variables. Option 224 is
+# exposed as $opt224 (BusyBox udhcpc naming convention for custom options).
+# Request the option by adding to /etc/config/network for the WAN interface:
+#   option udhcpc_opts '-O 224'
+#
+# This hook runs on every DHCP bound/renew event. It exits without writing
+# if the device has already bootstrapped (credentials present) or if the
+# option was not sent by the server.
+
+TOKEN="${opt224}"
+[ -z "$TOKEN" ] && exit 0
+
+# Skip if bootstrap is already complete.
+[ -f /etc/waverms/credentials ] && exit 0
+# Skip if a baked-in token is already present.
+[ -f /etc/waverms/bootstrap_token ] && exit 0
+
+mkdir -p /etc/waverms
+printf '%s' "$TOKEN" > /etc/waverms/bootstrap_token
+chmod 600 /etc/waverms/bootstrap_token
