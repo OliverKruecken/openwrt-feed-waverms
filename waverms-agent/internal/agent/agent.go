@@ -198,15 +198,16 @@ type ServiceInfo struct {
 
 // InfoPayload is published to device/{id}/info every HeartbeatInterval seconds.
 type InfoPayload struct {
-	DeviceID       string        `json:"device_id"`
-	Hostname       string        `json:"hostname"`
-	UptimeSeconds  int64         `json:"uptime_seconds"`
-	AgentVersion   string        `json:"agent_version"`
-	Model          string        `json:"model"`
-	OpenWrtVersion string        `json:"openwrt_version"`
-	Timestamp      string        `json:"timestamp"`
-	Capabilities   []string      `json:"capabilities"`
-	Services       []ServiceInfo `json:"services,omitempty"`
+	DeviceID          string           `json:"device_id"`
+	Hostname          string           `json:"hostname"`
+	UptimeSeconds     int64            `json:"uptime_seconds"`
+	AgentVersion      string           `json:"agent_version"`
+	Model             string           `json:"model"`
+	OpenWrtVersion    string           `json:"openwrt_version"`
+	Timestamp         string           `json:"timestamp"`
+	Capabilities      []string         `json:"capabilities"`
+	Services          []ServiceInfo    `json:"services,omitempty"`
+	InstalledPackages []ApkPackageInfo `json:"installed_packages,omitempty"`
 }
 
 // hostKeyFingerprints returns a map of filename → lowercase hex SHA-256 for each
@@ -306,6 +307,8 @@ var supportedCapabilities = []string{
 	"set_password",
 	"tls_cert_push",
 	"service_apply",
+	"apk_report",
+	"apk_manage",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -529,6 +532,8 @@ func New(opts *Options) *Agent {
 		"set_password":     a.handleSetPassword,
 		"tls_cert_push":    a.handleTlsCertPush,
 		"service_apply":    a.handleServiceApply,
+		"apk_report":       a.handleApkReport,
+		"apk_manage":       a.handleApkManage,
 	}
 	return a
 }
@@ -830,16 +835,18 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 
 	caps := append(supportedCapabilities, "ssh_daemon:"+a.sshDaemon.Name)
 	services := discoverServices(a.uci, a.initdDir)
+	pkgs := a.installedPackages()
 	info := InfoPayload{
-		DeviceID:       a.creds.DeviceID,
-		Hostname:       hostname,
-		UptimeSeconds:  uptime,
-		AgentVersion:   a.version,
-		Model:          a.model,
-		OpenWrtVersion: a.openwrtVersion,
-		Timestamp:      time.Now().UTC().Format(time.RFC3339),
-		Capabilities:   caps,
-		Services:       services,
+		DeviceID:          a.creds.DeviceID,
+		Hostname:          hostname,
+		UptimeSeconds:     uptime,
+		AgentVersion:      a.version,
+		Model:             a.model,
+		OpenWrtVersion:    a.openwrtVersion,
+		Timestamp:         time.Now().UTC().Format(time.RFC3339),
+		Capabilities:      caps,
+		Services:          services,
+		InstalledPackages: pkgs,
 	}
 
 	payload, err := json.Marshal(info)

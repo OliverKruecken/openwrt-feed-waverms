@@ -221,5 +221,10 @@ func (m *MockUCIRunner) ExecCmd(path string, args ...string) (string, error) {
 		cmd += " " + strings.Join(args, " ")
 	}
 	m.record(cmd)
+	if m.Results != nil {
+		if out, ok := m.Results[cmd]; ok {
+			return out, m.err(cmd)
+		}
+	}
 	return "", m.err(cmd)
 }
