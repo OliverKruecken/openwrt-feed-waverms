@@ -5,16 +5,19 @@
 #   224 — bootstrap token
 #   225 — BROKER_HOST
 #   226 — BROKER_PORT
+#
+# netifd reads 'reqopts' as space-separated option numbers and passes
+# each as a -O flag to udhcpc — do not include -O here.
 
-EXISTING=$(uci -q get network.wan.udhcpc_opts)
+EXISTING=$(uci -q get network.wan.reqopts)
 case "$EXISTING" in
-    *"-O 224"*) ;;  # already configured, nothing to do
+    *224*) ;;  # already configured, nothing to do
     "")
-        uci set network.wan.udhcpc_opts='-O 224 -O 225 -O 226'
+        uci set network.wan.reqopts='224 225 226'
         uci commit network
         ;;
     *)
-        uci set network.wan.udhcpc_opts="$EXISTING -O 224 -O 225 -O 226"
+        uci set network.wan.reqopts="$EXISTING 224 225 226"
         uci commit network
         ;;
 esac

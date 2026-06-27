@@ -22,11 +22,10 @@ log() { logger -t waverms-dhcp "$*"; }
 log "action=$1 opt224=${opt224:-(none)} opt225=${opt225:-(none)} opt226=${opt226:-(none)}"
 
 # Decode a hex string to UTF-8 text (e.g. "6d717474" → "mqtt").
+# Uses sed + printf \x escapes — BusyBox awk lacks strtonum.
 hex_to_str() {
-    printf '%s' "$1" | awk '{
-        for (i = 1; i <= length($0); i += 2)
-            printf "%c", strtonum("0x" substr($0, i, 2))
-    }'
+    [ -n "$1" ] || return
+    printf "$(printf '%s' "$1" | sed 's/../\\x&/g')"
 }
 
 # Decode a big-endian hex string to a decimal integer (e.g. "22b3" → 8883).
