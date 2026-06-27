@@ -46,8 +46,8 @@ define Package/waverms-agent/install
 	$(call GoPackage/Package/Install/Bin,$(1))
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/waverms-agent.init $(1)/etc/init.d/waverms-agent
-	$(INSTALL_DIR) $(1)/etc/udhcpc.d
-	$(INSTALL_BIN) ./files/60-waverms-bootstrap $(1)/etc/udhcpc.d/60-waverms-bootstrap
+	$(INSTALL_DIR) $(1)/etc/udhcpc.user.d
+	$(INSTALL_BIN) ./files/60-waverms-bootstrap $(1)/etc/udhcpc.user.d/60-waverms-bootstrap
 	$(INSTALL_DIR) $(1)/etc/waverms
 	$(INSTALL_CONF) ./files/etc/waverms/config $(1)/etc/waverms/config
 endef
