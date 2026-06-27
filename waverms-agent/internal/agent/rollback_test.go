@@ -80,7 +80,11 @@ func TestWatchdog_Confirmed(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
 
-	disconnCh := make(chan struct{}) // never closed → connectivity maintained
+	// Simulate an active session so getSessionDisconnCh() returns non-nil when the timer fires.
+	activeCh := make(chan struct{}) // never closed — session stays up
+	a.setSessionDisconnCh(activeCh)
+
+	disconnCh := make(chan struct{}) // never closed → no disconnect during watchdog
 	confirmCh := make(chan struct{}) // never closed → no server confirm
 	backup := configBackup{data: map[string][]byte{}}
 
@@ -133,11 +137,12 @@ func TestWatchdog_ConfirmedByServer(t *testing.T) {
 	assert.Nil(t, a.takePendingRollbackAck())
 }
 
-// TestWatchdog_Rollback verifies that when the MQTT connection drops before the
-// watchdog timer fires, the agent rolls back the config and queues an ACK error.
+// TestWatchdog_Rollback verifies that when the MQTT connection drops and the device
+// does NOT reconnect before the watchdog timer fires, the agent rolls back the config
+// and queues a deferred ACK error. (disconnCh fires, no new session → timer → rollback)
 func TestWatchdog_Rollback(t *testing.T) {
 	origTimeout := connectivityWatchdogTimeout
-	connectivityWatchdogTimeout = 10 * time.Second // long — we close disconnCh first
+	connectivityWatchdogTimeout = 50 * time.Millisecond // short so test doesn't stall
 	t.Cleanup(func() { connectivityWatchdogTimeout = origTimeout })
 
 	dir := t.TempDir()
@@ -156,9 +161,9 @@ func TestWatchdog_Rollback(t *testing.T) {
 
 	mock := mqttclient.NewMockMQTTClient()
 	a := newTestAgent(mock, &uci.MockUCIRunner{})
+	// sessionDisconnCh is nil (no active session) — rollback should happen when timer fires.
 
 	disconnCh := make(chan struct{})
-
 	noConfirm := make(chan struct{}) // never closed — server never sends config_confirm in this test
 
 	var wg sync.WaitGroup
@@ -168,7 +173,7 @@ func TestWatchdog_Rollback(t *testing.T) {
 		a.runConnectivityWatchdog("cmd-2", backup, []string{"network"}, disconnCh, noConfirm)
 	}()
 
-	// Simulate connection drop before the watchdog timer expires.
+	// Simulate connection drop; the device does not reconnect (sessionDisconnCh stays nil).
 	close(disconnCh)
 	wg.Wait()
 
@@ -186,6 +191,62 @@ func TestWatchdog_Rollback(t *testing.T) {
 
 	// No MQTT publish yet (ACK is deferred until reconnect).
 	assert.Empty(t, mock.Published)
+}
+
+// TestWatchdog_DisconnectThenReconnect verifies that when the session drops after
+// a config_apply but the device reconnects before the watchdog timer fires, the
+// agent auto-confirms (sends ACK "ok") instead of rolling back.
+func TestWatchdog_DisconnectThenReconnect(t *testing.T) {
+	origTimeout := connectivityWatchdogTimeout
+	connectivityWatchdogTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { connectivityWatchdogTimeout = origTimeout })
+
+	dir := t.TempDir()
+	origDir := uciConfigDir
+	uciConfigDir = dir
+	t.Cleanup(func() { uciConfigDir = origDir })
+
+	goodConfig := []byte("good network config")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "network"), goodConfig, 0644))
+	backup, err := backupConfigFiles([]string{"network"})
+	require.NoError(t, err)
+
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	// Simulate reconnect: give the agent an active session disconnect channel so
+	// getSessionDisconnCh() returns non-nil when the timer fires.
+	reconnectedCh := make(chan struct{}) // never closed — new session is alive
+	a.setSessionDisconnCh(reconnectedCh)
+
+	disconnCh := make(chan struct{})
+	noConfirm := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.runConnectivityWatchdog("cmd-reconnect", backup, []string{"network"}, disconnCh, noConfirm)
+	}()
+
+	// Simulate the brief disconnect caused by network interface restart.
+	close(disconnCh)
+	wg.Wait()
+
+	// Config must NOT be rolled back.
+	current, err := os.ReadFile(filepath.Join(dir, "network"))
+	require.NoError(t, err)
+	assert.Equal(t, string(goodConfig), string(current))
+
+	// ACK "ok" must have been published (auto-confirm).
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "cmd-reconnect", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+
+	// No pending rollback ACK.
+	assert.Nil(t, a.takePendingRollbackAck())
 }
 
 // TestWatchdog_NilDisconnCh verifies that a nil disconnCh (session gone) causes

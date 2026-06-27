@@ -93,6 +93,11 @@ func (a *Agent) handleConfigApply(cmd Command) {
 	confirmCh := make(chan struct{})
 	a.setWatchdogConfirm(cmd.CmdID, confirmCh)
 
+	// Signal the reconnect loop to bypass exponential backoff for the duration
+	// of the watchdog so a brief network-interface restart doesn't prevent the
+	// device from reconnecting within the 2-minute window.
+	a.watchdogActive.Store(true)
+
 	// ACK is deferred: the watchdog goroutine either confirms connectivity and
 	// sends ACK "ok", or rolls back the config and queues an ACK "error".
 	go a.runConnectivityWatchdog(cmd.CmdID, backup, committed, a.getSessionDisconnCh(), confirmCh)

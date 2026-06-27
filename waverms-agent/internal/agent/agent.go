@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/OliverKruecken/waverms-agent/internal/bootstrap"
@@ -442,6 +443,13 @@ type Agent struct {
 	// know which file to read for the state report.
 	tlsCertMu   sync.RWMutex
 	tlsCertPath string
+
+	// watchdogActive is set while a config_apply connectivity watchdog is
+	// running. The reconnect loop uses this to bypass exponential backoff so
+	// the device reconnects quickly after a network-interface restart caused
+	// by the apply, giving the watchdog the best chance to observe the new
+	// session within its 2-minute window.
+	watchdogActive atomic.Bool
 }
 
 func (a *Agent) setTLSCertPath(path string) {
@@ -690,6 +698,20 @@ func (a *Agent) Run(ctx context.Context) error {
 		// of uptime would wait up to 300 s before its first reconnect attempt.
 		if time.Since(sessionStart) >= sessionHealthyThreshold {
 			delay = time.Second
+		}
+		// During a config_apply watchdog, reconnect immediately (1 s) so the
+		// device gets back online within the 2-minute watchdog window even when
+		// the normal backoff delay has grown large (up to 5 min). The backoff
+		// state is not updated during this fast path so it resumes normally once
+		// the watchdog phase ends.
+		if a.watchdogActive.Load() {
+			slog.Info("session ended during config_apply watchdog, reconnecting without backoff", "err", err)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(time.Second):
+			}
+			continue
 		}
 		slog.Info("session ended, reconnecting", "err", err, "delay", delay)
 		select {

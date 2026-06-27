@@ -86,9 +86,13 @@ func (b configBackup) restore(packages []string) error {
 //
 // After a successful apply, this goroutine waits for connectivityWatchdogTimeout.
 // If the server sends config_confirm (confirmCh is closed) the apply is confirmed
-// immediately. If disconnCh fires first the backup is restored and a rollback ACK
-// is queued. If neither fires within the timeout the apply is confirmed by timeout.
+// immediately. If the session disconnects (e.g. because a network config change
+// restarted the interface) the goroutine keeps waiting — the device may reconnect
+// with the new config. When the timer fires, a live session means auto-confirm;
+// no session means rollback. If the session was already gone at watchdog start,
+// rollback happens immediately.
 func (a *Agent) runConnectivityWatchdog(cmdID string, backup configBackup, packages []string, disconnCh <-chan struct{}, confirmCh <-chan struct{}) {
+	defer a.watchdogActive.Store(false)
 	defer a.clearWatchdogConfirm(cmdID)
 
 	if disconnCh == nil {
@@ -101,16 +105,29 @@ func (a *Agent) runConnectivityWatchdog(cmdID string, backup configBackup, packa
 	timer := time.NewTimer(connectivityWatchdogTimeout)
 	defer timer.Stop()
 
-	select {
-	case <-confirmCh:
-		slog.Info("config_apply confirmed by server", "cmd_id", cmdID)
-		a.publishAck(cmdID, "ok", "")
-	case <-timer.C:
-		slog.Info("config_apply connectivity confirmed", "cmd_id", cmdID, "after", connectivityWatchdogTimeout)
-		a.publishAck(cmdID, "ok", "")
-	case <-disconnCh:
-		slog.Warn("config_apply connectivity lost during watchdog, rolling back", "cmd_id", cmdID)
-		a.doRollback(cmdID, backup, packages)
+	for {
+		select {
+		case <-confirmCh:
+			slog.Info("config_apply confirmed by server", "cmd_id", cmdID)
+			a.publishAck(cmdID, "ok", "")
+			return
+		case <-timer.C:
+			// Timer expired: confirm if we have an active session, roll back if not.
+			if a.getSessionDisconnCh() != nil {
+				slog.Info("config_apply connectivity confirmed", "cmd_id", cmdID, "after", connectivityWatchdogTimeout)
+				a.publishAck(cmdID, "ok", "")
+			} else {
+				slog.Warn("config_apply: no connectivity after watchdog timeout, rolling back", "cmd_id", cmdID)
+				a.doRollback(cmdID, backup, packages)
+			}
+			return
+		case <-disconnCh:
+			// The session dropped — likely because a network config change restarted
+			// the interface. Don't roll back yet; let the timer run so the device
+			// has time to come back up with the new config.
+			slog.Info("config_apply: session disconnected during watchdog window, waiting for timer", "cmd_id", cmdID, "remaining", connectivityWatchdogTimeout)
+			disconnCh = nil // nil channel never fires; removes this case from future iterations
+		}
 	}
 }
 
