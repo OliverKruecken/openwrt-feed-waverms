@@ -88,6 +88,7 @@ func TestHandleApkReport(t *testing.T) {
 	mock := &uci.MockUCIRunner{
 		Results: map[string]string{
 			"cmd apk list -I": installedOutput,
+			"cmd apk update":  "",
 			"cmd apk list -a": availableOutput,
 		},
 	}
@@ -129,6 +130,18 @@ func TestHandleApkReport(t *testing.T) {
 	}
 	if ack.Pkgs == nil || len(ack.Pkgs.Available) == 0 {
 		t.Errorf("expected available packages in ack, got %+v", ack.Pkgs)
+	}
+
+	// Verify apk update was called to refresh the repository index.
+	found := false
+	for _, call := range mock.Calls {
+		if call == "cmd apk update" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'apk update' to be called before listing available packages; calls: %v", mock.Calls)
 	}
 }
 

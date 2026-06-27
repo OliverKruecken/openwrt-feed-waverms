@@ -114,6 +114,13 @@ func (a *Agent) handleApkReport(cmd Command) {
 		slog.Warn("apk_report: apk list -I failed", "err", err)
 		// Still continue — available list might succeed
 	}
+
+	// Refresh the package index so apk list -a returns the full repository contents.
+	// Without this, the local APK database may be empty and available would be [].
+	if _, errUpdate := a.uci.ExecCmd("apk", "update"); errUpdate != nil {
+		slog.Warn("apk_report: apk update failed — using cached index", "err", errUpdate)
+	}
+
 	availableOut, errAvail := a.runApkList("-a")
 	if errAvail != nil {
 		slog.Warn("apk_report: apk list -a failed", "err", errAvail)
