@@ -9,12 +9,28 @@
 #   225 — BROKER_HOST      → /etc/waverms/dhcp
 #   226 — BROKER_PORT      → /etc/waverms/dhcp
 #
+# BusyBox udhcpc passes custom options (224+) as hex strings. hex_to_str and
+# hex_to_int decode them before writing.
+#
 # Request all three from the DHCP server by adding to /etc/config/network:
 #   option udhcpc_opts '-O 224 -O 225 -O 226'
 
 [ "$1" = "bound" ] || [ "$1" = "renew" ] || exit 0
 
-TOKEN="${opt224}"
+# Decode a hex string to UTF-8 text (e.g. "6d717474" → "mqtt").
+hex_to_str() {
+    printf '%s' "$1" | awk '{
+        for (i = 1; i <= length($0); i += 2)
+            printf "%c", strtonum("0x" substr($0, i, 2))
+    }'
+}
+
+# Decode a big-endian hex string to a decimal integer (e.g. "22b3" → 8883).
+hex_to_int() {
+    printf '%d' "0x$1" 2>/dev/null
+}
+
+TOKEN="$(hex_to_str "${opt224}")"
 if [ -n "$TOKEN" ]; then
     # Skip if bootstrap is already complete.
     [ -f /etc/waverms/credentials ] && exit 0
@@ -28,13 +44,13 @@ fi
 
 # Broker config (options 225 / 226) is written on every DHCP bound/renew so
 # the agent always reflects the current provisioning network's broker address.
-BROKER_HOST_OPT="${opt225}"
-BROKER_PORT_OPT="${opt226}"
-if [ -n "$BROKER_HOST_OPT" ] || [ -n "$BROKER_PORT_OPT" ]; then
+BROKER_HOST_OPT="$(hex_to_str "${opt225}")"
+BROKER_PORT_OPT="$(hex_to_int "${opt226}")"
+if [ -n "$BROKER_HOST_OPT" ] || [ -n "$BROKER_PORT_OPT" -a "$BROKER_PORT_OPT" != "0" ]; then
     mkdir -p /etc/waverms
     {
         [ -n "$BROKER_HOST_OPT" ] && printf 'BROKER_HOST=%s\n' "$BROKER_HOST_OPT"
-        [ -n "$BROKER_PORT_OPT" ] && printf 'BROKER_PORT=%s\n' "$BROKER_PORT_OPT"
+        [ -n "$BROKER_PORT_OPT" ] && [ "$BROKER_PORT_OPT" != "0" ] && printf 'BROKER_PORT=%s\n' "$BROKER_PORT_OPT"
     } > /etc/waverms/dhcp
     chmod 600 /etc/waverms/dhcp
 fi
