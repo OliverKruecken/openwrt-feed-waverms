@@ -15,7 +15,11 @@
 # Request all three from the DHCP server by adding to /etc/config/network:
 #   option udhcpc_opts '-O 224 -O 225 -O 226'
 
+log() { logger -t waverms-dhcp "$*"; }
+
 [ "$1" = "bound" ] || [ "$1" = "renew" ] || exit 0
+
+log "action=$1 opt224=${opt224:-(none)} opt225=${opt225:-(none)} opt226=${opt226:-(none)}"
 
 # Decode a hex string to UTF-8 text (e.g. "6d717474" → "mqtt").
 hex_to_str() {
@@ -32,14 +36,20 @@ hex_to_int() {
 
 TOKEN="$(hex_to_str "${opt224}")"
 if [ -n "$TOKEN" ]; then
-    # Skip if bootstrap is already complete.
-    [ -f /etc/waverms/credentials ] && exit 0
-    # Skip if a baked-in token is already present.
-    [ -f /etc/waverms/bootstrap_token ] && exit 0
-
+    if [ -f /etc/waverms/credentials ]; then
+        log "skipping bootstrap_token: credentials already present"
+        exit 0
+    fi
+    if [ -f /etc/waverms/bootstrap_token ]; then
+        log "skipping bootstrap_token: token already present"
+        exit 0
+    fi
     mkdir -p /etc/waverms
     printf '%s' "$TOKEN" > /etc/waverms/bootstrap_token
     chmod 600 /etc/waverms/bootstrap_token
+    log "wrote bootstrap_token"
+else
+    log "opt224 not received or empty — no bootstrap_token written"
 fi
 
 # Broker config (options 225 / 226) is written on every DHCP bound/renew so
@@ -53,4 +63,7 @@ if [ -n "$BROKER_HOST_OPT" ] || [ -n "$BROKER_PORT_OPT" -a "$BROKER_PORT_OPT" !=
         [ -n "$BROKER_PORT_OPT" ] && [ "$BROKER_PORT_OPT" != "0" ] && printf 'BROKER_PORT=%s\n' "$BROKER_PORT_OPT"
     } > /etc/waverms/dhcp
     chmod 600 /etc/waverms/dhcp
+    log "wrote /etc/waverms/dhcp: BROKER_HOST=${BROKER_HOST_OPT} BROKER_PORT=${BROKER_PORT_OPT}"
+else
+    log "opt225/opt226 not received — no dhcp overlay written"
 fi
