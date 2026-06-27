@@ -152,6 +152,89 @@ func TestWaitForBootstrapToken_Timeout(t *testing.T) {
 	assert.Contains(t, err.Error(), "bootstrap token not found")
 }
 
+func TestLoadWithOverlay_DHCPWins(t *testing.T) {
+	dir := t.TempDir()
+	staticPath := filepath.Join(dir, "config")
+	dhcpPath := filepath.Join(dir, "dhcp")
+	require.NoError(t, os.WriteFile(staticPath, []byte("BROKER_HOST=static.host\nBROKER_PORT=8883\n"), 0644))
+	require.NoError(t, os.WriteFile(dhcpPath, []byte("BROKER_HOST=dhcp.host\nBROKER_PORT=1234\n"), 0644))
+
+	cfg, err := LoadWithOverlay(staticPath, dhcpPath)
+	require.NoError(t, err)
+	assert.Equal(t, "dhcp.host", cfg.BrokerHost)
+	assert.Equal(t, 1234, cfg.BrokerPort)
+}
+
+func TestLoadWithOverlay_NoDHCPFile(t *testing.T) {
+	dir := t.TempDir()
+	staticPath := filepath.Join(dir, "config")
+	require.NoError(t, os.WriteFile(staticPath, []byte("BROKER_HOST=static.host\nBROKER_PORT=9999\n"), 0644))
+
+	cfg, err := LoadWithOverlay(staticPath, filepath.Join(dir, "dhcp"))
+	require.NoError(t, err)
+	assert.Equal(t, "static.host", cfg.BrokerHost)
+	assert.Equal(t, 9999, cfg.BrokerPort)
+}
+
+func TestLoadWithOverlay_PartialDHCP(t *testing.T) {
+	dir := t.TempDir()
+	staticPath := filepath.Join(dir, "config")
+	dhcpPath := filepath.Join(dir, "dhcp")
+	require.NoError(t, os.WriteFile(staticPath, []byte("BROKER_HOST=static.host\nBROKER_PORT=8883\n"), 0644))
+	require.NoError(t, os.WriteFile(dhcpPath, []byte("BROKER_HOST=dhcp.host\n"), 0644))
+
+	cfg, err := LoadWithOverlay(staticPath, dhcpPath)
+	require.NoError(t, err)
+	assert.Equal(t, "dhcp.host", cfg.BrokerHost)
+	assert.Equal(t, 8883, cfg.BrokerPort) // port still from static
+}
+
+func TestWaitForBrokerHost_ImmediateStatic(t *testing.T) {
+	dir := t.TempDir()
+	staticPath := filepath.Join(dir, "config")
+	require.NoError(t, os.WriteFile(staticPath, []byte("BROKER_HOST=static.host\n"), 0644))
+
+	cfg, err := WaitForBrokerHost(staticPath, filepath.Join(dir, "dhcp"), 100*time.Millisecond)
+	require.NoError(t, err)
+	assert.Equal(t, "static.host", cfg.BrokerHost)
+}
+
+func TestWaitForBrokerHost_FileAppearsAfterDelay(t *testing.T) {
+	orig := brokerHostPollInterval
+	brokerHostPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { brokerHostPollInterval = orig })
+
+	dir := t.TempDir()
+	dhcpPath := filepath.Join(dir, "dhcp")
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = os.WriteFile(dhcpPath, []byte("BROKER_HOST=dhcp.host\n"), 0600)
+	}()
+
+	cfg, err := WaitForBrokerHost(filepath.Join(dir, "config"), dhcpPath, 500*time.Millisecond)
+	require.NoError(t, err)
+	assert.Equal(t, "dhcp.host", cfg.BrokerHost)
+}
+
+func TestWaitForBrokerHost_Timeout(t *testing.T) {
+	orig := brokerHostPollInterval
+	brokerHostPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { brokerHostPollInterval = orig })
+
+	dir := t.TempDir()
+	_, err := WaitForBrokerHost(filepath.Join(dir, "config"), filepath.Join(dir, "dhcp"), 30*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BROKER_HOST not available")
+}
+
+func TestWaitForBrokerHost_ZeroTimeout_Missing(t *testing.T) {
+	dir := t.TempDir()
+	_, err := WaitForBrokerHost(filepath.Join(dir, "config"), filepath.Join(dir, "dhcp"), 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "BROKER_HOST is not set")
+}
+
 func TestWaitForBootstrapToken_EmptyFileWaitsForContent(t *testing.T) {
 	orig := bootstrapTokenPollInterval
 	bootstrapTokenPollInterval = 5 * time.Millisecond

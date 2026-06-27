@@ -15,13 +15,26 @@
 # option was not sent by the server.
 
 TOKEN="${opt224}"
-[ -z "$TOKEN" ] && exit 0
+if [ -n "$TOKEN" ]; then
+    # Skip if bootstrap is already complete.
+    [ -f /etc/waverms/credentials ] && exit 0
+    # Skip if a baked-in token is already present.
+    [ -f /etc/waverms/bootstrap_token ] && exit 0
 
-# Skip if bootstrap is already complete.
-[ -f /etc/waverms/credentials ] && exit 0
-# Skip if a baked-in token is already present.
-[ -f /etc/waverms/bootstrap_token ] && exit 0
+    mkdir -p /etc/waverms
+    printf '%s' "$TOKEN" > /etc/waverms/bootstrap_token
+    chmod 600 /etc/waverms/bootstrap_token
+fi
 
-mkdir -p /etc/waverms
-printf '%s' "$TOKEN" > /etc/waverms/bootstrap_token
-chmod 600 /etc/waverms/bootstrap_token
+# Broker config (options 225 / 226) is written on every DHCP bound/renew so
+# the agent always reflects the current provisioning network's broker address.
+BROKER_HOST_OPT="${opt225}"
+BROKER_PORT_OPT="${opt226}"
+if [ -n "$BROKER_HOST_OPT" ] || [ -n "$BROKER_PORT_OPT" ]; then
+    mkdir -p /etc/waverms
+    {
+        [ -n "$BROKER_HOST_OPT" ] && printf 'BROKER_HOST=%s\n' "$BROKER_HOST_OPT"
+        [ -n "$BROKER_PORT_OPT" ] && printf 'BROKER_PORT=%s\n' "$BROKER_PORT_OPT"
+    } > /etc/waverms/dhcp
+    chmod 600 /etc/waverms/dhcp
+fi

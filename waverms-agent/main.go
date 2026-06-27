@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/OliverKruecken/waverms-agent/internal/agent"
 	"github.com/OliverKruecken/waverms-agent/internal/config"
@@ -41,18 +42,14 @@ func main() {
 		debug.SetMemoryLimit(32 << 20) // 32 MiB
 	}
 
-	cfg, err := config.Load("/etc/waverms/config")
+	// WaitForBrokerHost polls /etc/waverms/config and the DHCP overlay
+	// /etc/waverms/dhcp (written by /etc/udhcpc.d/60-waverms-bootstrap from
+	// option 225) until BROKER_HOST is non-empty or 120 s elapse.
+	cfg, err := config.WaitForBrokerHost("/etc/waverms/config", "/etc/waverms/dhcp", 120*time.Second)
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 	cfg.AgentVersion = Version
-
-	// BROKER_HOST is mandatory. An empty value means the image builder overlay
-	// was not applied for this batch. Fail fast with a clear message rather than
-	// silently connecting to an empty host and entering a confusing reconnect loop.
-	if cfg.BrokerHost == "" {
-		log.Fatalf("config: BROKER_HOST is not set — set it in /etc/waverms/config or via the image builder files/ overlay")
-	}
 
 	logLevel := slog.LevelInfo
 	if cfg.Debug {

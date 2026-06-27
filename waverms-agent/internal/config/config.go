@@ -95,6 +95,116 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// loadKeys parses a key=value config file at path and returns a map of keys to
+// values using the same format as Load. A missing file is not an error.
+func loadKeys(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil
+		}
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	out := map[string]string{}
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if idx := strings.Index(value, " #"); idx >= 0 {
+			value = strings.TrimSpace(value[:idx])
+		}
+		out[key] = value
+	}
+	return out, scanner.Err()
+}
+
+// LoadWithOverlay reads the static config at staticPath and then overlays keys
+// from dhcpPath on top. DHCP values win on conflict. A missing dhcp file is not
+// an error — the static config is returned as-is.
+func LoadWithOverlay(staticPath, dhcpPath string) (*Config, error) {
+	cfg, err := Load(staticPath)
+	if err != nil {
+		return nil, err
+	}
+	overlay, err := loadKeys(dhcpPath)
+	if err != nil {
+		return nil, fmt.Errorf("dhcp config: %w", err)
+	}
+	for key, value := range overlay {
+		switch key {
+		case "BROKER_HOST":
+			cfg.BrokerHost = value
+		case "BROKER_PORT":
+			if p, err := strconv.Atoi(value); err == nil {
+				cfg.BrokerPort = p
+			}
+		case "TLS_INSECURE":
+			cfg.TLSInsecure = strings.EqualFold(value, "true")
+		case "HEARTBEAT_INTERVAL":
+			if v, err := strconv.Atoi(value); err == nil {
+				cfg.HeartbeatInterval = v
+			}
+		case "STATE_INTERVAL":
+			if v, err := strconv.Atoi(value); err == nil {
+				cfg.StateInterval = v
+			}
+		case "AGENT_VERSION":
+			cfg.AgentVersion = value
+		case "DEBUG":
+			cfg.Debug = strings.EqualFold(value, "true")
+		}
+	}
+	return cfg, nil
+}
+
+// brokerHostPollInterval is the sleep between polls in WaitForBrokerHost.
+// Overridden in tests to avoid slow sleeps.
+var brokerHostPollInterval = 5 * time.Second
+
+// WaitForBrokerHost polls LoadWithOverlay until cfg.BrokerHost is non-empty or
+// timeout elapses. Use this when broker_host may be delivered by a DHCP hook
+// (option 225) written after the agent starts. Zero timeout means one try with
+// no wait — returns an error if BrokerHost is still empty.
+func WaitForBrokerHost(staticPath, dhcpPath string, timeout time.Duration) (*Config, error) {
+	tryOnce := func() (*Config, bool) {
+		cfg, err := LoadWithOverlay(staticPath, dhcpPath)
+		if err == nil && cfg.BrokerHost != "" {
+			return cfg, true
+		}
+		return cfg, false
+	}
+
+	if timeout <= 0 {
+		cfg, ok := tryOnce()
+		if !ok {
+			return nil, fmt.Errorf("BROKER_HOST is not set in %s or %s", staticPath, dhcpPath)
+		}
+		return cfg, nil
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if cfg, ok := tryOnce(); ok {
+			return cfg, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("BROKER_HOST not available in %s or %s after %v", staticPath, dhcpPath, timeout)
+		}
+		time.Sleep(min(brokerHostPollInterval, remaining))
+	}
+}
+
 // ReadBootstrapToken reads the one-line token file at path.
 func ReadBootstrapToken(path string) (string, error) {
 	data, err := os.ReadFile(path)
