@@ -1,0 +1,20 @@
+#!/bin/sh
+# UCI defaults: request WaveRMS DHCP options on the wan interface.
+# Runs once on first boot via /etc/init.d/boot, then deleted.
+# Options requested:
+#   224 — bootstrap token
+#   225 — BROKER_HOST
+#   226 — BROKER_PORT
+
+EXISTING=$(uci -q get network.wan.udhcpc_opts)
+case "$EXISTING" in
+    *"-O 224"*) ;;  # already configured, nothing to do
+    "")
+        uci set network.wan.udhcpc_opts='-O 224 -O 225 -O 226'
+        uci commit network
+        ;;
+    *)
+        uci set network.wan.udhcpc_opts="$EXISTING -O 224 -O 225 -O 226"
+        uci commit network
+        ;;
+esac
