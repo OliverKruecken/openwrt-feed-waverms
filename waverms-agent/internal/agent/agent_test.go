@@ -990,8 +990,7 @@ func TestPublishState_ConnectTrigger(t *testing.T) {
 
 // ---- unified state report: authorized_keys / password_hash / tls_cert_fingerprint --------
 
-func TestAuthorizedKeyFingerprints_ValidKeys_ReturnsOneFingerprintPerKey(t *testing.T) {
-	// "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA fake"
+func TestInstalledAuthorizedKeys_ValidKeys_ReturnsNormalizedPublicKeys(t *testing.T) {
 	const pubKeyB64 = "AAAAC3NzaC1lZDI1NTE5AAAA"
 	fw := &filewriter.MockFileAccess{
 		ReadFiles: map[string][]byte{
@@ -999,33 +998,30 @@ func TestAuthorizedKeyFingerprints_ValidKeys_ReturnsOneFingerprintPerKey(t *test
 		},
 	}
 
-	got := authorizedKeyFingerprints(fw)
+	got := installedAuthorizedKeys(fw)
 
 	require.Len(t, got, 2)
-	blob, err := base64.StdEncoding.DecodeString(pubKeyB64)
-	require.NoError(t, err)
-	sum := sha256.Sum256(blob)
-	want := hex.EncodeToString(sum[:])
+	want := "ssh-ed25519 " + pubKeyB64
 	assert.Equal(t, want, got[0])
 	assert.Equal(t, want, got[1])
 }
 
-func TestAuthorizedKeyFingerprints_MalformedLines_AreSkipped(t *testing.T) {
+func TestInstalledAuthorizedKeys_MalformedLines_AreSkipped(t *testing.T) {
 	fw := &filewriter.MockFileAccess{
 		ReadFiles: map[string][]byte{
 			authorizedKeysPath: []byte("not-enough-fields\nssh-ed25519 not!valid!base64\n"),
 		},
 	}
 
-	got := authorizedKeyFingerprints(fw)
+	got := installedAuthorizedKeys(fw)
 
 	assert.Empty(t, got)
 }
 
-func TestAuthorizedKeyFingerprints_MissingFile_ReturnsNil(t *testing.T) {
+func TestInstalledAuthorizedKeys_MissingFile_ReturnsNil(t *testing.T) {
 	fw := &filewriter.MockFileAccess{}
 
-	got := authorizedKeyFingerprints(fw)
+	got := installedAuthorizedKeys(fw)
 
 	assert.Nil(t, got)
 }
@@ -1123,6 +1119,7 @@ func TestPublishState_IncludesUnifiedStateReportFields(t *testing.T) {
 	var state StatePayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &state))
 	require.Len(t, state.AuthorizedKeys, 1)
+	assert.Equal(t, "ssh-ed25519 "+pubKeyB64, state.AuthorizedKeys[0])
 	assert.Equal(t, "$6$saltsalt$hashhash", state.PasswordHash)
 	assert.NotEmpty(t, state.TLSCertFingerprint)
 }

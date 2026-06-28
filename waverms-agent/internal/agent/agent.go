@@ -93,9 +93,9 @@ type StatePayload struct {
 	// RawFiles contains the verbatim content of /etc/config/<pkg> for each package,
 	// preserving comments and formatting that uci export strips.
 	RawFiles map[string]string `json:"raw_files,omitempty"`
-	// AuthorizedKeys holds one lowercase-hex SHA-256 fingerprint per public key
-	// currently installed in authorizedKeysPath, computed over the decoded key
-	// blob (not the raw "type base64 comment" line text).
+	// AuthorizedKeys holds one normalized public key string per line currently
+	// installed in authorizedKeysPath, in the form "<type> <base64blob>" (comment
+	// stripped). Malformed lines and a missing file are silently skipped.
 	AuthorizedKeys []string `json:"authorized_keys,omitempty"`
 	// HostKeyFingerprints maps SSH host key filename -> lowercase hex SHA-256 of
 	// the raw file content.
@@ -119,10 +119,11 @@ const authorizedKeysPath = "/etc/dropbear/authorized_keys"
 // Matches TlsCertService.DEFAULT_CERT_PATH on the backend.
 const defaultTLSCertPath = "/etc/uhttpd.crt"
 
-// authorizedKeyFingerprints reads authorizedKeysPath via fw and returns one
-// lowercase-hex SHA-256 fingerprint per valid key line. Malformed lines and a
-// missing file are silently skipped/ignored.
-func authorizedKeyFingerprints(fw filewriter.FileAccess) []string {
+// installedAuthorizedKeys reads authorizedKeysPath via fw and returns one
+// normalized public key string per valid line, in the form "<type> <base64blob>"
+// (comment stripped). The base64 blob is validated but not decoded further.
+// Malformed lines and a missing file are silently skipped/ignored.
+func installedAuthorizedKeys(fw filewriter.FileAccess) []string {
 	data, err := fw.ReadFile(authorizedKeysPath)
 	if err != nil {
 		return nil
@@ -137,12 +138,10 @@ func authorizedKeyFingerprints(fw filewriter.FileAccess) []string {
 		if len(fields) < 2 {
 			continue
 		}
-		blob, err := base64.StdEncoding.DecodeString(fields[1])
-		if err != nil {
+		if _, err := base64.StdEncoding.DecodeString(fields[1]); err != nil {
 			continue
 		}
-		sum := sha256.Sum256(blob)
-		out = append(out, hex.EncodeToString(sum[:]))
+		out = append(out, fields[0]+" "+fields[1])
 	}
 	return out
 }
@@ -1013,7 +1012,7 @@ func (a *Agent) publishState(ctx context.Context, trigger string, pkgs []string)
 		Trigger:             trigger,
 		Packages:            packages,
 		RawFiles:            rawFiles,
-		AuthorizedKeys:      authorizedKeyFingerprints(a.fileAccess),
+		AuthorizedKeys:      installedAuthorizedKeys(a.fileAccess),
 		HostKeyFingerprints: hostKeyFingerprints(allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name], a.sshDaemon.Dir),
 		TLSCertFingerprint:  a.tlsCertFingerprint(),
 		PasswordHash:        a.rootPasswordHash(),
