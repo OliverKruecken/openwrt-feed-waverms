@@ -111,8 +111,13 @@ func (c *PahoClient) Connect(ctx context.Context, opts ConnectOptions) error {
 
 	cp := &paho.Connect{
 		ClientID:   opts.ClientID,
-		CleanStart: true,
+		CleanStart: false,
 		KeepAlive:  30,
+		Properties: &paho.ConnectProperties{
+			// 5-minute session expiry lets the broker queue QoS-1 commands
+			// for brief disconnects (reconnects, DHCP renewals).
+			SessionExpiryInterval: func() *uint32 { v := uint32(300); return &v }(),
+		},
 	}
 
 	if opts.Username != "" {
