@@ -57,6 +57,12 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 	log.SetFlags(0) // slog handler owns timestamps
+	slog.Info("waverms-agent starting",
+		"version", Version,
+		"go", runtime.Version(),
+		"os", runtime.GOOS,
+		"arch", runtime.GOARCH,
+	)
 
 	creds, err := config.LoadCredentials("/etc/waverms/credentials")
 	if err != nil && !os.IsNotExist(err) {
