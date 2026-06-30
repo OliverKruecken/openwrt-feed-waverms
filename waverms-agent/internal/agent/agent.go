@@ -255,18 +255,24 @@ var allowedHostKeyFilenamesByDaemon = map[string]map[string]bool{
 	"dropbear": {
 		"dropbear_ed25519_host_key":     true,
 		"dropbear_rsa_host_key":         true,
+		"dropbear_ecdsa_host_key":       true,
 		"dropbear_ed25519_host_key.pub": true,
 		"dropbear_rsa_host_key.pub":     true,
+		"dropbear_ecdsa_host_key.pub":   true,
 		"ssh_host_ed25519_key":          true,
 		"ssh_host_rsa_key":              true,
+		"ssh_host_ecdsa_key":            true,
 		"ssh_host_ed25519_key.pub":      true,
 		"ssh_host_rsa_key.pub":          true,
+		"ssh_host_ecdsa_key.pub":        true,
 	},
 	"openssh": {
 		"ssh_host_ed25519_key":     true,
 		"ssh_host_rsa_key":         true,
+		"ssh_host_ecdsa_key":       true,
 		"ssh_host_ed25519_key.pub": true,
 		"ssh_host_rsa_key.pub":     true,
+		"ssh_host_ecdsa_key.pub":   true,
 	},
 }
 

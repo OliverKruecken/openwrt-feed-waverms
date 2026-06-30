@@ -254,18 +254,21 @@ func (a *Agent) handleSetPassword(cmd Command) {
 
 func (a *Agent) handleHostKeyFetch(cmd Command) {
 	allowedFilenames := allowedHostKeyFilenamesByDaemon[a.sshDaemon.Name]
+	slog.Info("host_key_fetch: scanning", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "dir", a.sshDaemon.Dir)
 	keys := make(map[string][]byte)
 	for name := range allowedFilenames {
 		path := a.sshDaemon.Dir + name
 		content, err := a.fileAccess.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
+				slog.Debug("host_key_fetch: not found, skipping", "file", path)
 				continue
 			}
 			slog.Error("host_key_fetch: read failed", "cmd_id", cmd.CmdID, "file", name, "err", err)
 			a.publishAck(cmd.CmdID, "error", fmt.Sprintf("read %s: %v", name, err))
 			return
 		}
+		slog.Info("host_key_fetch: found key file", "cmd_id", cmd.CmdID, "file", name)
 		keys[name] = content
 	}
 	if len(keys) == 0 {
