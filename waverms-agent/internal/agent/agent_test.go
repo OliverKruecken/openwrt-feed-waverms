@@ -1736,6 +1736,79 @@ func TestPublishInfo_CapabilitiesContainTlsCertPush(t *testing.T) {
 	assert.Contains(t, info.Capabilities, "tls_cert_push")
 }
 
+func TestHandleCommand_TlsCertRemove_AcksOkAndRestartsUhttpd(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	fw := &filewriter.MockFileAccess{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{"cmd_id":"tcr-1","type":"tls_cert_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	assert.Contains(t, uciMock.Calls, "cmd /etc/init.d/uhttpd restart")
+
+	require.Len(t, mock.Published, 2) // ack + state report
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "tcr-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestHandleCommand_TlsCertRemove_ClearsPushedPaths(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{}
+	certBytes := []byte("pushed-cert-bytes")
+	fw := &filewriter.MockFileAccess{
+		ReadFiles: map[string][]byte{
+			"/tmp/custom.crt": certBytes,
+		},
+	}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	// Simulate a prior successful push that stored custom paths.
+	a.setTLSCertPaths("/tmp/custom.crt", "/tmp/custom.key")
+	sum := sha256.Sum256(certBytes)
+	assert.Equal(t, hex.EncodeToString(sum[:]), a.tlsCertFingerprint(), "pre-condition: fingerprint should be non-empty")
+
+	payload := `{"cmd_id":"tcr-2","type":"tls_cert_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	// After removal the stored paths are cleared; fingerprint falls back to
+	// the default path which isn't in ReadFiles → should be empty.
+	assert.Empty(t, a.tlsCertFingerprint(), "fingerprint should be empty after remove")
+}
+
+func TestHandleCommand_TlsCertRemove_UhttpdRestartFailure_StillAcksOk(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Errors: map[string]error{
+			"cmd /etc/init.d/uhttpd restart": errors.New("service not found"),
+		},
+	}
+	fw := &filewriter.MockFileAccess{}
+	a := newTestAgentWithFW(mock, uciMock, fw)
+
+	payload := `{"cmd_id":"tcr-3","type":"tls_cert_remove","payload":{}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 2)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestPublishInfo_CapabilitiesContainTlsCertRemove(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "tls_cert_remove")
+}
+
 // ── hostKeyFingerprints ────────────────────────────────────────────────────────
 
 func TestHostKeyFingerprints_ReturnsHexSHA256ForExistingFile(t *testing.T) {

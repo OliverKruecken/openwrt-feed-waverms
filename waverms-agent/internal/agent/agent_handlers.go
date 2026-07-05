@@ -333,11 +333,41 @@ func (a *Agent) handleTlsCertPush(cmd Command) {
 		slog.Warn("tls_cert_push: service restart failed (best-effort)", "cmd_id", cmd.CmdID, "service", svc, "err", err)
 	}
 
-	a.setTLSCertPath(p.CertPath)
+	a.setTLSCertPaths(p.CertPath, p.KeyPath)
 
 	slog.Info("tls_cert_push succeeded", "cmd_id", cmd.CmdID, "cert_path", p.CertPath, "key_path", p.KeyPath)
 	a.publishAck(cmd.CmdID, "ok", "")
 	a.publishStateAfterSuccess("tls_cert_push")
+}
+
+// defaultTLSKeyPath is the key file counterpart to defaultTLSCertPath.
+// Matches TlsCertService.DEFAULT_KEY_PATH on the backend.
+const defaultTLSKeyPath = "/etc/uhttpd.key"
+
+func (a *Agent) handleTlsCertRemove(cmd Command) {
+	certPath := a.getTLSCertPath()
+	if certPath == "" {
+		certPath = defaultTLSCertPath
+	}
+	keyPath := a.getTLSKeyPath()
+	if keyPath == "" {
+		keyPath = defaultTLSKeyPath
+	}
+
+	for _, path := range []string{certPath, keyPath} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			slog.Warn("tls_cert_remove: could not remove file", "cmd_id", cmd.CmdID, "path", path, "err", err)
+		}
+	}
+
+	if _, err := a.uci.ExecCmd("/etc/init.d/uhttpd", "restart"); err != nil {
+		slog.Warn("tls_cert_remove: uhttpd restart failed (non-fatal)", "cmd_id", cmd.CmdID, "err", err)
+	}
+
+	a.setTLSCertPaths("", "")
+	slog.Info("tls_cert_remove succeeded", "cmd_id", cmd.CmdID, "cert_path", certPath, "key_path", keyPath)
+	a.publishAck(cmd.CmdID, "ok", "")
+	a.publishStateAfterSuccess("tls_cert_remove")
 }
 
 // isTlsCertPathAllowed validates that the path starts with /etc/ or /tmp/ after cleaning.

@@ -312,6 +312,7 @@ var supportedCapabilities = []string{
 	"host_key_fetch",
 	"set_password",
 	"tls_cert_push",
+	"tls_cert_remove",
 	"service_apply",
 	"apk_report",
 	"apk_manage",
@@ -443,11 +444,12 @@ type Agent struct {
 	confirmCmdID string
 	confirmCh    chan struct{}
 
-	// tlsCertMu protects tlsCertPath, the cert_path of the most recently
-	// successful tls_cert_push this session. Used by tlsCertFingerprint to
-	// know which file to read for the state report.
+	// tlsCertMu protects tlsCertPath and tlsKeyPath — the paths of the most
+	// recently successful tls_cert_push this session. Used by tlsCertFingerprint
+	// to know which file to read, and by tls_cert_remove to know what to delete.
 	tlsCertMu   sync.RWMutex
 	tlsCertPath string
+	tlsKeyPath  string
 
 	// watchdogActive is set while a config_apply connectivity watchdog is
 	// running. The reconnect loop uses this to bypass exponential backoff so
@@ -457,16 +459,26 @@ type Agent struct {
 	watchdogActive atomic.Bool
 }
 
-func (a *Agent) setTLSCertPath(path string) {
+func (a *Agent) setTLSCertPaths(certPath, keyPath string) {
 	a.tlsCertMu.Lock()
-	a.tlsCertPath = path
+	a.tlsCertPath = certPath
+	a.tlsKeyPath = keyPath
 	a.tlsCertMu.Unlock()
 }
+
+// setTLSCertPath is kept for use by tests that only care about the cert path.
+func (a *Agent) setTLSCertPath(path string) { a.setTLSCertPaths(path, "") }
 
 func (a *Agent) getTLSCertPath() string {
 	a.tlsCertMu.RLock()
 	defer a.tlsCertMu.RUnlock()
 	return a.tlsCertPath
+}
+
+func (a *Agent) getTLSKeyPath() string {
+	a.tlsCertMu.RLock()
+	defer a.tlsCertMu.RUnlock()
+	return a.tlsKeyPath
 }
 
 // publishStateAfterSuccess re-publishes the full state report after a command
@@ -544,6 +556,7 @@ func New(opts *Options) *Agent {
 		"host_key_fetch":   a.handleHostKeyFetch,
 		"set_password":     a.handleSetPassword,
 		"tls_cert_push":    a.handleTlsCertPush,
+		"tls_cert_remove":  a.handleTlsCertRemove,
 		"service_apply":    a.handleServiceApply,
 		"apk_report":       a.handleApkReport,
 		"apk_manage":       a.handleApkManage,
