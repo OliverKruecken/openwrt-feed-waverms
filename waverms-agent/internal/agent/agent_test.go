@@ -1508,7 +1508,7 @@ func TestHandleCommand_HostKeyFetch_SkipsMissingFiles(t *testing.T) {
 	assert.Equal(t, []byte("only-key"), ack.Keys["dropbear_ed25519_host_key"])
 }
 
-func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksError(t *testing.T) {
+func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksOkWithEmptyKeys(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	fw := &filewriter.MockFileAccess{} // all reads return ErrNotExist
 	a := newTestAgentWithFW(mock, &uci.MockUCIRunner{}, fw)
@@ -1520,8 +1520,8 @@ func TestHandleCommand_HostKeyFetch_NoFilesPresent_AcksError(t *testing.T) {
 	var ack AckPayload
 	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
 	assert.Equal(t, "hkf-empty", ack.CmdID)
-	assert.Equal(t, "error", ack.Status)
-	assert.Contains(t, ack.Output, "no host key files found")
+	assert.Equal(t, "ok", ack.Status)
+	assert.Empty(t, ack.Keys)
 }
 
 func TestHandleCommand_HostKeyFetch_ReadError_AcksError(t *testing.T) {

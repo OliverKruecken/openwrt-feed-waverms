@@ -272,11 +272,10 @@ func (a *Agent) handleHostKeyFetch(cmd Command) {
 		keys[name] = content
 	}
 	if len(keys) == 0 {
-		slog.Warn("host_key_fetch: no host key files found", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name)
-		a.publishAck(cmd.CmdID, "error", "no host key files found")
-		return
+		slog.Info("host_key_fetch: no host key files found, reporting empty set", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name)
+	} else {
+		slog.Info("host_key_fetch succeeded", "cmd_id", cmd.CmdID, "files", len(keys))
 	}
-	slog.Info("host_key_fetch succeeded", "cmd_id", cmd.CmdID, "files", len(keys))
 	a.publishAckKeys(cmd.CmdID, keys)
 }
 
