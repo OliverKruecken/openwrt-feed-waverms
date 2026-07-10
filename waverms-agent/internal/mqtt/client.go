@@ -30,6 +30,9 @@ type ConnectOptions struct {
 	Password   string
 	LWT        *LWT
 	TLSConfig  *tls.Config
+	// CleanStart requests a fresh broker session, discarding any queued messages.
+	// Use once after sysupgrade to prevent re-delivery of the flashing command.
+	CleanStart bool
 }
 
 // MQTTClient abstracts the MQTT connection so agent logic and tests
@@ -111,7 +114,7 @@ func (c *PahoClient) Connect(ctx context.Context, opts ConnectOptions) error {
 
 	cp := &paho.Connect{
 		ClientID:   opts.ClientID,
-		CleanStart: false,
+		CleanStart: opts.CleanStart,
 		KeepAlive:  30,
 		Properties: &paho.ConnectProperties{
 			// 5-minute session expiry lets the broker queue QoS-1 commands

@@ -411,6 +411,10 @@ type Options struct {
 	SSHDaemon *sshDaemonInfo
 	// InitdDir is the path scanned for available services. Defaults to /etc/init.d.
 	InitdDir string
+	// CleanStartSentinelPath is checked at startup; if present the first MQTT
+	// connect uses CleanStart=true to discard broker-queued messages left over
+	// from a sysupgrade. Defaults to /etc/config/waverms-agent-clean-start.
+	CleanStartSentinelPath string
 }
 
 // Agent is the main runtime component.
@@ -467,6 +471,12 @@ type Agent struct {
 	// by the apply, giving the watchdog the best chance to observe the new
 	// session within its 2-minute window.
 	watchdogActive atomic.Bool
+
+	// cleanStartSentinelPath is the file written before sysupgrade so the first
+	// post-reboot connect can use CleanStart=true to discard re-delivered commands.
+	cleanStartSentinelPath string
+	// needsCleanStart is true for the first connect after a sysupgrade reboot.
+	needsCleanStart atomic.Bool
 }
 
 func (a *Agent) setTLSCertPaths(certPath, keyPath string) {
@@ -551,6 +561,11 @@ func New(opts *Options) *Agent {
 		initdDir = "/etc/init.d"
 	}
 
+	sentinelPath := opts.CleanStartSentinelPath
+	if sentinelPath == "" {
+		sentinelPath = "/etc/config/waverms-agent-clean-start"
+	}
+
 	a := &Agent{
 		cfg:                opts.Config,
 		creds:              opts.Creds,
@@ -570,6 +585,14 @@ func New(opts *Options) *Agent {
 		bootstrapTokenPath:        tokenPath,
 		bootstrapTokenWaitTimeout: tokenWait,
 		credsPath:                 credsPath,
+		cleanStartSentinelPath:    sentinelPath,
+	}
+
+	// If the sentinel file exists from a prior sysupgrade, request a clean
+	// broker session on the first connect to discard re-delivered commands.
+	if _, err := os.Stat(sentinelPath); err == nil {
+		slog.Info("sysupgrade sentinel found — will use CleanStart on first connect", "path", sentinelPath)
+		a.needsCleanStart.Store(true)
 	}
 	a.cmdHandlers = map[string]func(Command){
 		"uci_set":          a.handleUCISet,
@@ -780,6 +803,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 		Retain:  true,
 	}
 
+	cleanStart := a.needsCleanStart.CompareAndSwap(true, false)
 	connOpts := mqttclient.ConnectOptions{
 		BrokerHost: a.cfg.BrokerHost,
 		BrokerPort: a.cfg.BrokerPort,
@@ -787,10 +811,19 @@ func (a *Agent) runSession(ctx context.Context) error {
 		Username:   a.creds.DeviceID,
 		Password:   a.creds.Secret,
 		LWT:        lwt,
+		CleanStart: cleanStart,
 	}
 
 	if err := a.mqtt.Connect(ctx, connOpts); err != nil {
+		// Restore the flag so the next attempt also requests a clean session.
+		if cleanStart {
+			a.needsCleanStart.Store(true)
+		}
 		return fmt.Errorf("connect: %w", err)
+	}
+	if cleanStart {
+		slog.Info("clean-start connect succeeded, removing sysupgrade sentinel")
+		_ = os.Remove(a.cleanStartSentinelPath)
 	}
 	slog.Debug("connected", "client_id", a.creds.DeviceID)
 

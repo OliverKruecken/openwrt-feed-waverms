@@ -172,28 +172,46 @@ func TestHandleSysupgrade_MissingURL(t *testing.T) {
 	}
 }
 
-// TestHandleSysupgrade_AlreadyOnTargetVersion verifies that a QoS-1 re-delivery
-// after a successful sysupgrade+reboot is detected and skipped: if the device is
-// already running the target version the command must ack "ok" without downloading
-// or flashing anything.
-func TestHandleSysupgrade_AlreadyOnTargetVersion(t *testing.T) {
+// TestHandleSysupgrade_WritesSentinelBeforeExec verifies that the clean-start
+// sentinel file is written to persistent storage before syscall.Exec is called,
+// so the broker-queued QoS-1 re-delivery is discarded on the next connect.
+func TestHandleSysupgrade_WritesSentinelBeforeExec(t *testing.T) {
+	sentinel := t.TempDir() + "/clean-start"
+
 	mock := mqttclient.NewMockMQTTClient()
 	downloader := &MockFirmwareDownloader{}
 	runner := &MockSysupgradeRunner{}
 	checker := &MockDiskSpaceChecker{Free: 100 * 1024 * 1024}
 
 	a := newTestAgentWithSysupgrade(mock, downloader, runner, checker)
-	a.openwrtVersion = "23.05.3" // already on the target version post-reboot
+	a.cleanStartSentinelPath = sentinel
 
 	a.handleSysupgrade(sysupgradeCmd("cmd-8", "http://host/fw.bin", "abc123", 5*1024*1024, true))
 
-	if len(downloader.Calls) != 0 {
-		t.Error("expected no download calls when already on target version")
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Errorf("expected sentinel file to exist after sysupgrade exec, got: %v", err)
 	}
-	if len(runner.ExecCalls) != 0 {
-		t.Error("expected no Exec calls when already on target version")
+}
+
+// TestHandleSysupgrade_SentinelRemovedOnExecFailure verifies that the sentinel
+// is cleaned up when sysupgrade fails to exec (nothing was actually flashed).
+func TestHandleSysupgrade_SentinelRemovedOnExecFailure(t *testing.T) {
+	sentinel := t.TempDir() + "/clean-start"
+
+	mock := mqttclient.NewMockMQTTClient()
+	downloader := &MockFirmwareDownloader{}
+	runner := &MockSysupgradeRunner{ExecErr: fmt.Errorf("exec failed")}
+	checker := &MockDiskSpaceChecker{Free: 100 * 1024 * 1024}
+
+	a := newTestAgentWithSysupgrade(mock, downloader, runner, checker)
+	a.cleanStartSentinelPath = sentinel
+
+	a.handleSysupgrade(sysupgradeCmd("cmd-9", "http://host/fw.bin", "abc123", 5*1024*1024, true))
+
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Error("expected sentinel file to be removed when sysupgrade exec fails")
 	}
-	if got := lastAckStatus(mock); got != "ok" {
-		t.Errorf("expected ack status 'ok', got %q", got)
+	if got := lastAckStatus(mock); got != "error" {
+		t.Errorf("expected ack status 'error', got %q", got)
 	}
 }

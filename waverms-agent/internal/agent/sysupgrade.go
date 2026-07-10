@@ -174,17 +174,6 @@ func (a *Agent) handleSysupgrade(cmd Command) {
 		return
 	}
 
-	// Guard against QoS-1 re-delivery after a successful sysupgrade+reboot:
-	// syscall.Exec replaces the agent process before PUBACK is sent, so the
-	// broker re-delivers the command on reconnect. If we're already running the
-	// target version the upgrade already completed — ack and return.
-	if p.Version != "" && a.openwrtVersion == p.Version {
-		slog.Info("sysupgrade: already on target version, skipping re-delivered command",
-			"cmd_id", cmd.CmdID, "version", p.Version)
-		a.publishAck(cmd.CmdID, "ok", "already running target version "+p.Version)
-		return
-	}
-
 	// Free space check: need image + 4 MiB headroom (tmpfs is RAM-backed).
 	required := uint64(p.SizeBytes + sysupgradeMinHeadroom)
 	free, err := a.diskSpaceChecker.FreeBytes("/tmp")
@@ -215,6 +204,18 @@ func (a *Agent) handleSysupgrade(cmd Command) {
 		return
 	}
 
+	// Write sentinel before replacing the process. syscall.Exec never returns,
+	// so PUBACK for this QoS-1 command is never sent. The broker re-delivers it
+	// on the next connect; the sentinel makes the agent request CleanStart=true
+	// for that connect, discarding the queued message.
+	// Only needed for keep_config=true — factory reset wipes /etc/config/ and
+	// also wipes the credentials, so the agent can't reconnect anyway.
+	if p.KeepConfig {
+		if err := os.WriteFile(a.cleanStartSentinelPath, []byte("1"), 0600); err != nil {
+			slog.Warn("sysupgrade: could not write clean-start sentinel", "path", a.cleanStartSentinelPath, "err", err)
+		}
+	}
+
 	// Send "started" ack at QoS 1 then replace the process with sysupgrade.
 	// After syscall.Exec the process is gone — the ack must be in-flight first.
 	a.publishAck(cmd.CmdID, "started", "image verified, starting sysupgrade")
@@ -222,6 +223,8 @@ func (a *Agent) handleSysupgrade(cmd Command) {
 
 	// Replace the process. If Exec returns, sysupgrade itself failed before flashing.
 	if err := a.sysupgradeRunner.Exec(sysupgradeTmpPath, p.KeepConfig); err != nil {
+		// Exec failed (sysupgrade didn't run) — remove sentinel, nothing was flashed.
+		os.Remove(a.cleanStartSentinelPath)
 		os.Remove(sysupgradeTmpPath)
 		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("sysupgrade exec failed: %v", err))
 	}
