@@ -321,7 +321,9 @@ func TestApply_MergeMode_RemovesStaleOption(t *testing.T) {
 		"desired option 'mode' must not be deleted")
 }
 
-func TestApply_AnonymousSection_SkipsStaleClean(t *testing.T) {
+func TestApply_AnonymousSection_NewSection_SkipsStaleClean(t *testing.T) {
+	// No existing anonymous sections → Add() is called and there are no prior
+	// options to clean. cleanStaleOptions must NOT run (nothing to clean).
 	mock := &uci.MockUCIRunner{}
 	a := apply.New(mock)
 
@@ -336,13 +338,43 @@ func TestApply_AnonymousSection_SkipsStaleClean(t *testing.T) {
 	_, err := a.Apply(json.RawMessage(cfg))
 	require.NoError(t, err)
 
-	// Show IS called in merge mode to list existing anonymous sections, but
-	// cleanStaleOptions must NOT run for anonymous sections – verify no
-	// delete-option calls that would indicate stale-clean ran.
 	for _, c := range mock.Calls {
 		assert.NotContains(t, c, "delete-option",
-			"cleanStaleOptions must not run for anonymous (nameless) sections")
+			"cleanStaleOptions must not run for newly-created anonymous sections")
 	}
+}
+
+func TestApply_AnonymousSection_ReuseExisting_CleansStaleOptions(t *testing.T) {
+	// Device has @dnsmasq[0] with "authoritative" and "boguspriv" set.
+	// Desired config only specifies "authoritative". "boguspriv" must be removed
+	// so the deploy resolves drift instead of leaving extra options on the device.
+	mock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"show dhcp": strings.Join([]string{
+				"dhcp.@dnsmasq[0]=dnsmasq",
+				"dhcp.@dnsmasq[0].authoritative='1'",
+				"dhcp.@dnsmasq[0].boguspriv='1'",
+			}, "\n"),
+		},
+	}
+	a := apply.New(mock)
+
+	cfg := `{
+  "dhcp": {
+    ".mode": "merge",
+    "dnsmasq": [
+      { "authoritative": "1" }
+    ]
+  }
+}`
+	_, err := a.Apply(json.RawMessage(cfg))
+	require.NoError(t, err)
+
+	assert.Contains(t, mock.Calls, "delete-option dhcp.@dnsmasq[0].boguspriv",
+		"stale option 'boguspriv' should be removed from reused anonymous section")
+	assert.NotContains(t, mock.Calls, "delete-option dhcp.@dnsmasq[0].authoritative",
+		"desired option 'authoritative' must not be deleted")
+	assert.Contains(t, mock.Calls, "commit dhcp")
 }
 
 func TestApply_AnonymousSection_MergeReuseExisting(t *testing.T) {

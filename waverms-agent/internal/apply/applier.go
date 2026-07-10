@@ -273,10 +273,11 @@ func (a *Applier) applySection(pkgName, sectionType string, section map[string]i
 		}
 	}
 
-	// For named sections: remove options present on the device but absent from desired.
-	// This gives exact-match semantics for the section content while package-level merge
-	// still leaves unmentioned sections untouched.
-	if hasName {
+	// For named sections or reused anonymous sections: remove options present on the
+	// device but absent from desired. This gives exact-match semantics for the section
+	// content while package-level merge still leaves unmentioned sections untouched.
+	// Newly-created anonymous sections (reuseID=="") have no prior options to clean.
+	if hasName || reuseID != "" {
 		if err := a.cleanStaleOptions(pkgName, sectionID, desiredKeys); err != nil {
 			return err
 		}
