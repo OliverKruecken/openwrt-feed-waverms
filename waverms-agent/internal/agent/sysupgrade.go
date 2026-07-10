@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -170,6 +171,17 @@ func (a *Agent) handleSysupgrade(cmd Command) {
 	}
 	if p.URL == "" || p.SHA256 == "" {
 		a.publishAck(cmd.CmdID, "error", "payload missing url or sha256")
+		return
+	}
+
+	// Guard against QoS-1 re-delivery after a successful sysupgrade+reboot:
+	// syscall.Exec replaces the agent process before PUBACK is sent, so the
+	// broker re-delivers the command on reconnect. If we're already running the
+	// target version the upgrade already completed — ack and return.
+	if p.Version != "" && a.openwrtVersion == p.Version {
+		slog.Info("sysupgrade: already on target version, skipping re-delivered command",
+			"cmd_id", cmd.CmdID, "version", p.Version)
+		a.publishAck(cmd.CmdID, "ok", "already running target version "+p.Version)
 		return
 	}
 

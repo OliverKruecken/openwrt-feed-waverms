@@ -171,3 +171,29 @@ func TestHandleSysupgrade_MissingURL(t *testing.T) {
 		t.Errorf("expected ack status 'error', got %q", got)
 	}
 }
+
+// TestHandleSysupgrade_AlreadyOnTargetVersion verifies that a QoS-1 re-delivery
+// after a successful sysupgrade+reboot is detected and skipped: if the device is
+// already running the target version the command must ack "ok" without downloading
+// or flashing anything.
+func TestHandleSysupgrade_AlreadyOnTargetVersion(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	downloader := &MockFirmwareDownloader{}
+	runner := &MockSysupgradeRunner{}
+	checker := &MockDiskSpaceChecker{Free: 100 * 1024 * 1024}
+
+	a := newTestAgentWithSysupgrade(mock, downloader, runner, checker)
+	a.openwrtVersion = "23.05.3" // already on the target version post-reboot
+
+	a.handleSysupgrade(sysupgradeCmd("cmd-8", "http://host/fw.bin", "abc123", 5*1024*1024, true))
+
+	if len(downloader.Calls) != 0 {
+		t.Error("expected no download calls when already on target version")
+	}
+	if len(runner.ExecCalls) != 0 {
+		t.Error("expected no Exec calls when already on target version")
+	}
+	if got := lastAckStatus(mock); got != "ok" {
+		t.Errorf("expected ack status 'ok', got %q", got)
+	}
+}
