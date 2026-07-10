@@ -316,6 +316,7 @@ var supportedCapabilities = []string{
 	"service_apply",
 	"apk_report",
 	"apk_manage",
+	"sysupgrade",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -390,6 +391,12 @@ type Options struct {
 	FileAccess filewriter.FileAccess
 	// PasswordSetter is used to set system user passwords. Defaults to OSPasswordSetter.
 	PasswordSetter PasswordSetter
+	// FirmwareDownloader downloads firmware images. Defaults to HTTPFirmwareDownloader.
+	FirmwareDownloader FirmwareDownloader
+	// SysupgradeRunner tests and executes sysupgrade. Defaults to OSSysupgradeRunner.
+	SysupgradeRunner SysupgradeRunner
+	// DiskSpaceChecker reports available disk space. Defaults to StatfsDiskSpaceChecker.
+	DiskSpaceChecker DiskSpaceChecker
 	// BootstrapOpts overrides the default bootstrap options (useful in tests).
 	BootstrapOpts *bootstrap.Options
 	// BootstrapTokenPath is used if BootstrapOpts is nil. Defaults to /etc/waverms/bootstrap_token.
@@ -415,9 +422,12 @@ type Agent struct {
 	openwrtVersion string
 	mqtt           mqttclient.MQTTClient
 	uci            uci.UCIRunner
-	fileAccess     filewriter.FileAccess
-	passwordSetter PasswordSetter
-	version        string
+	fileAccess         filewriter.FileAccess
+	passwordSetter     PasswordSetter
+	firmwareDownloader FirmwareDownloader
+	sysupgradeRunner   SysupgradeRunner
+	diskSpaceChecker   DiskSpaceChecker
+	version            string
 	sshDaemon      sshDaemonInfo
 	initdDir       string
 
@@ -516,6 +526,18 @@ func New(opts *Options) *Agent {
 	if ps == nil {
 		ps = &OSPasswordSetter{}
 	}
+	fd := opts.FirmwareDownloader
+	if fd == nil {
+		fd = &HTTPFirmwareDownloader{}
+	}
+	sr := opts.SysupgradeRunner
+	if sr == nil {
+		sr = &OSSysupgradeRunner{}
+	}
+	dc := opts.DiskSpaceChecker
+	if dc == nil {
+		dc = &StatfsDiskSpaceChecker{}
+	}
 
 	daemon := daemonDropbear
 	if opts.SSHDaemon != nil {
@@ -539,6 +561,9 @@ func New(opts *Options) *Agent {
 		uci:                opts.UCI,
 		fileAccess:         fw,
 		passwordSetter:     ps,
+		firmwareDownloader: fd,
+		sysupgradeRunner:   sr,
+		diskSpaceChecker:   dc,
 		version:            opts.Version,
 		sshDaemon:          daemon,
 		initdDir:           initdDir,
@@ -560,6 +585,7 @@ func New(opts *Options) *Agent {
 		"service_apply":    a.handleServiceApply,
 		"apk_report":       a.handleApkReport,
 		"apk_manage":       a.handleApkManage,
+		"sysupgrade":       a.handleSysupgrade,
 	}
 	return a
 }
