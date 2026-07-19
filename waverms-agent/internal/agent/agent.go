@@ -421,6 +421,9 @@ type Options struct {
 	// connect uses CleanStart=true to discard broker-queued messages left over
 	// from a sysupgrade. Defaults to /etc/config/waverms-agent-clean-start.
 	CleanStartSentinelPath string
+	// AckRetryDelay is the pause between ack publish retry attempts (useful in
+	// tests). Defaults to 5 s.
+	AckRetryDelay time.Duration
 }
 
 // Agent is the main runtime component.
@@ -449,6 +452,7 @@ type Agent struct {
 	credsPath                 string
 	debugHandler              *mqttDebugHandler
 	cmdHandlers               map[string]func(Command)
+	ackRetryDelay             time.Duration
 
 	// sessionMu protects sessionDisconnCh, which is set for the lifetime of
 	// each MQTT session and read by the config_apply connectivity watchdog.
@@ -575,6 +579,11 @@ func New(opts *Options) *Agent {
 		sentinelPath = "/etc/config/waverms-agent-clean-start"
 	}
 
+	ackRetryDelay := opts.AckRetryDelay
+	if ackRetryDelay == 0 {
+		ackRetryDelay = defaultAckRetryDelay
+	}
+
 	a := &Agent{
 		cfg:                       opts.Config,
 		creds:                     opts.Creds,
@@ -598,6 +607,7 @@ func New(opts *Options) *Agent {
 		bootstrapTokenWaitTimeout: tokenWait,
 		credsPath:                 credsPath,
 		cleanStartSentinelPath:    sentinelPath,
+		ackRetryDelay:             ackRetryDelay,
 	}
 
 	// If the sentinel file exists from a prior sysupgrade, request a clean
@@ -991,6 +1001,18 @@ func (a *Agent) handleCommand(topic string, payload []byte) {
 	handler(cmd)
 }
 
+// ackPublishAttempts bounds how often an ack publish is tried. A lost ack leaves
+// the backend command unacknowledged until its timeout scheduler marks the
+// dimension apply_failed even though the command succeeded on-device, so acks
+// are worth a few attempts. Bounded so a dead session cannot block the handler
+// for long — reconnects are the session watchdog's job. Worst case
+// (attempts × 10 s publish timeout + delays) stays well inside the backend's
+// 5-minute command timeout, so a retried ack still lands in time.
+const (
+	ackPublishAttempts   = 3
+	defaultAckRetryDelay = 5 * time.Second
+)
+
 // publishAck sends the command acknowledgement to device/{id}/ack.
 func (a *Agent) publishAck(cmdID, status, output string) {
 	slog.Debug("publishing ack", "cmd_id", cmdID, "status", status)
@@ -1000,16 +1022,7 @@ func (a *Agent) publishAck(cmdID, status, output string) {
 		Output:    output,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
-	payload, err := json.Marshal(ack)
-	if err != nil {
-		slog.Error("marshal ack", "err", err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
-		slog.Error("publish ack", "cmd_id", cmdID, "err", err)
-	}
+	a.publishAckPayload(cmdID, ack)
 }
 
 // publishAckKeys publishes an ACK_OK carrying the fetched host key map (host_key_fetch).
@@ -1021,16 +1034,34 @@ func (a *Agent) publishAckKeys(cmdID string, keys map[string][]byte) {
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Keys:      keys,
 	}
+	a.publishAckPayload(cmdID, ack)
+}
+
+// publishAckPayload marshals ack and publishes it to device/{id}/ack, retrying
+// up to ackPublishAttempts times with a.ackRetryDelay between attempts.
+func (a *Agent) publishAckPayload(cmdID string, ack AckPayload) {
 	payload, err := json.Marshal(ack)
 	if err != nil {
-		slog.Error("marshal ack keys", "err", err)
+		slog.Error("marshal ack", "cmd_id", cmdID, "err", err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := a.mqtt.Publish(ctx, mqttclient.TopicAck(a.creds.DeviceID), payload, 1, false); err != nil {
-		slog.Error("publish ack keys", "cmd_id", cmdID, "err", err)
+	topic := mqttclient.TopicAck(a.creds.DeviceID)
+	for attempt := 1; attempt <= ackPublishAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = a.mqtt.Publish(ctx, topic, payload, 1, false)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("publish ack succeeded after retry", "cmd_id", cmdID, "attempt", attempt)
+			}
+			return
+		}
+		if attempt < ackPublishAttempts {
+			slog.Warn("publish ack failed, retrying", "cmd_id", cmdID, "attempt", attempt, "err", err)
+			time.Sleep(a.ackRetryDelay)
+		}
 	}
+	slog.Error("publish ack failed, giving up", "cmd_id", cmdID, "attempts", ackPublishAttempts, "err", err)
 }
 
 // handleInfoRequest processes an incoming info/request message by publishing a fresh heartbeat.

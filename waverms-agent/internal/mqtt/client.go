@@ -232,14 +232,17 @@ type PublishedMsg struct {
 
 // MockMQTTClient is a test double that records all interactions.
 type MockMQTTClient struct {
-	mu             sync.Mutex
-	ConnectOpts    []ConnectOptions
-	Published      []PublishedMsg
-	Subscriptions  map[string]MessageHandler
-	disconnCh      chan struct{}
-	connectErr     error
-	subscribeErr   error // returned by every Subscribe call when set
-	disconnectCnt  int  // incremented by every Disconnect call
+	mu            sync.Mutex
+	ConnectOpts   []ConnectOptions
+	Published     []PublishedMsg
+	Subscriptions map[string]MessageHandler
+	PublishCalls  int // total Publish invocations, including failed ones
+	disconnCh     chan struct{}
+	connectErr    error
+	subscribeErr  error // returned by every Subscribe call when set
+	publishErr    error // returned by Publish while publishFails > 0
+	publishFails  int   // number of upcoming Publish calls that fail
+	disconnectCnt int   // incremented by every Disconnect call
 }
 
 // NewMockMQTTClient creates a ready-to-use mock.
@@ -270,9 +273,23 @@ func (m *MockMQTTClient) Connect(_ context.Context, opts ConnectOptions) error {
 	return nil
 }
 
+// FailNextPublishes makes the next n Publish calls return err instead of
+// recording the message.
+func (m *MockMQTTClient) FailNextPublishes(n int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.publishFails = n
+	m.publishErr = err
+}
+
 func (m *MockMQTTClient) Publish(_ context.Context, topic string, payload []byte, qos byte, retain bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.PublishCalls++
+	if m.publishFails > 0 {
+		m.publishFails--
+		return m.publishErr
+	}
 	m.Published = append(m.Published, PublishedMsg{
 		Topic:   topic,
 		Payload: payload,

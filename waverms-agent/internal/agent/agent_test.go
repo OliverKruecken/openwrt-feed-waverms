@@ -32,14 +32,15 @@ func newTestAgentWithFW(mock *mqttclient.MockMQTTClient, uciMock *uci.MockUCIRun
 		Secret:   "test-secret",
 	}
 	return New(&Options{
-		Config:     cfg,
-		Creds:      creds,
-		MAC:        "aa:bb:cc:dd:ee:ff",
-		MQTT:       mock,
-		UCI:        uciMock,
-		FileAccess: fw,
-		Version:    "1.0.0",
-		SSHDaemon:  &daemonDropbear,
+		Config:        cfg,
+		Creds:         creds,
+		MAC:           "aa:bb:cc:dd:ee:ff",
+		MQTT:          mock,
+		UCI:           uciMock,
+		FileAccess:    fw,
+		Version:       "1.0.0",
+		SSHDaemon:     &daemonDropbear,
+		AckRetryDelay: time.Millisecond,
 	})
 }
 
@@ -98,6 +99,54 @@ func TestPublishInfo_CapabilitiesContainExpectedTypes(t *testing.T) {
 	assert.Contains(t, info.Capabilities, "file_write")
 	assert.Contains(t, info.Capabilities, "state_report")
 	assert.Contains(t, info.Capabilities, "host_key_restore")
+}
+
+func TestPublishAck_RetriesOnPublishFailure(t *testing.T) {
+	cases := []struct {
+		name          string
+		failures      int
+		wantPublished int
+		wantCalls     int
+	}{
+		{"succeeds first try", 0, 1, 1},
+		{"succeeds after one retry", 1, 1, 2},
+		{"succeeds on last attempt", 2, 1, 3},
+		{"gives up after max attempts", 3, 0, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := mqttclient.NewMockMQTTClient()
+			mock.FailNextPublishes(tc.failures, errors.New("broker unreachable"))
+			a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+			a.publishAck("cmd-1", "ok", "")
+
+			assert.Equal(t, tc.wantCalls, mock.PublishCalls)
+			require.Len(t, mock.Published, tc.wantPublished)
+			if tc.wantPublished > 0 {
+				assert.Equal(t, "device/test-device-uuid/ack", mock.Published[0].Topic)
+				var ack AckPayload
+				require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+				assert.Equal(t, "cmd-1", ack.CmdID)
+				assert.Equal(t, "ok", ack.Status)
+			}
+		})
+	}
+}
+
+func TestPublishAckKeys_RetriesOnPublishFailure(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	mock.FailNextPublishes(1, errors.New("broker unreachable"))
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	a.publishAckKeys("cmd-2", map[string][]byte{"dropbear_ed25519_host_key": []byte("key")})
+
+	assert.Equal(t, 2, mock.PublishCalls)
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "cmd-2", ack.CmdID)
+	assert.Contains(t, ack.Keys, "dropbear_ed25519_host_key")
 }
 
 func TestHandleCommand_HostKeyRestore_WritesFilesAndRestartDropbear(t *testing.T) {
