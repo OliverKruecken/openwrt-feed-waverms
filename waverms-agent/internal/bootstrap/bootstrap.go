@@ -27,6 +27,9 @@ type HwInfo struct {
 	Model          string `json:"model"`
 	OpenWrtVersion string `json:"openwrt_version"`
 	AgentVersion   string `json:"agent_version"`
+	Target         string `json:"target"`
+	Profile        string `json:"profile"`
+	VersionCode    string `json:"version_code"`
 }
 
 // BootstrapResponse is the payload received on the response topic.
@@ -55,6 +58,9 @@ type Options struct {
 	AgentVersion   string
 	Model          string
 	OpenWrtVersion string
+	Target         string
+	Profile        string
+	VersionCode    string
 }
 
 // Run executes the full bootstrap flow:
@@ -112,6 +118,9 @@ func Run(ctx context.Context, cfg *config.Config, opts Options, client mqttclien
 			Model:          opts.Model,
 			OpenWrtVersion: opts.OpenWrtVersion,
 			AgentVersion:   opts.AgentVersion,
+			Target:         opts.Target,
+			Profile:        opts.Profile,
+			VersionCode:    opts.VersionCode,
 		},
 	}
 	payload, err := json.Marshal(req)

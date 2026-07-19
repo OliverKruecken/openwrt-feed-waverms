@@ -204,6 +204,9 @@ type InfoPayload struct {
 	AgentVersion      string           `json:"agent_version"`
 	Model             string           `json:"model"`
 	OpenWrtVersion    string           `json:"openwrt_version"`
+	Target            string           `json:"target"`
+	Profile           string           `json:"profile"`
+	VersionCode       string           `json:"version_code"`
 	Timestamp         string           `json:"timestamp"`
 	Capabilities      []string         `json:"capabilities"`
 	Services          []ServiceInfo    `json:"services,omitempty"`
@@ -384,6 +387,9 @@ type Options struct {
 	MAC            string
 	Model          string
 	OpenWrtVersion string
+	Target         string
+	Profile        string
+	VersionCode    string
 	MQTT           mqttclient.MQTTClient
 	UCI            uci.UCIRunner
 	Version        string
@@ -419,27 +425,30 @@ type Options struct {
 
 // Agent is the main runtime component.
 type Agent struct {
-	cfg            *config.Config
-	creds          *config.Credentials
-	mac            string
-	model          string
-	openwrtVersion string
-	mqtt           mqttclient.MQTTClient
-	uci            uci.UCIRunner
+	cfg                *config.Config
+	creds              *config.Credentials
+	mac                string
+	model              string
+	openwrtVersion     string
+	target             string
+	profile            string
+	versionCode        string
+	mqtt               mqttclient.MQTTClient
+	uci                uci.UCIRunner
 	fileAccess         filewriter.FileAccess
 	passwordSetter     PasswordSetter
 	firmwareDownloader FirmwareDownloader
 	sysupgradeRunner   SysupgradeRunner
 	diskSpaceChecker   DiskSpaceChecker
 	version            string
-	sshDaemon      sshDaemonInfo
-	initdDir       string
+	sshDaemon          sshDaemonInfo
+	initdDir           string
 
 	bootstrapTokenPath        string
 	bootstrapTokenWaitTimeout time.Duration
 	credsPath                 string
-	debugHandler       *mqttDebugHandler
-	cmdHandlers        map[string]func(Command)
+	debugHandler              *mqttDebugHandler
+	cmdHandlers               map[string]func(Command)
 
 	// sessionMu protects sessionDisconnCh, which is set for the lifetime of
 	// each MQTT session and read by the config_apply connectivity watchdog.
@@ -567,21 +576,24 @@ func New(opts *Options) *Agent {
 	}
 
 	a := &Agent{
-		cfg:                opts.Config,
-		creds:              opts.Creds,
-		mac:                opts.MAC,
-		model:              opts.Model,
-		openwrtVersion:     opts.OpenWrtVersion,
-		mqtt:               opts.MQTT,
-		uci:                opts.UCI,
-		fileAccess:         fw,
-		passwordSetter:     ps,
-		firmwareDownloader: fd,
-		sysupgradeRunner:   sr,
-		diskSpaceChecker:   dc,
-		version:            opts.Version,
-		sshDaemon:          daemon,
-		initdDir:           initdDir,
+		cfg:                       opts.Config,
+		creds:                     opts.Creds,
+		mac:                       opts.MAC,
+		model:                     opts.Model,
+		openwrtVersion:            opts.OpenWrtVersion,
+		target:                    opts.Target,
+		profile:                   opts.Profile,
+		versionCode:               opts.VersionCode,
+		mqtt:                      opts.MQTT,
+		uci:                       opts.UCI,
+		fileAccess:                fw,
+		passwordSetter:            ps,
+		firmwareDownloader:        fd,
+		sysupgradeRunner:          sr,
+		diskSpaceChecker:          dc,
+		version:                   opts.Version,
+		sshDaemon:                 daemon,
+		initdDir:                  initdDir,
 		bootstrapTokenPath:        tokenPath,
 		bootstrapTokenWaitTimeout: tokenWait,
 		credsPath:                 credsPath,
@@ -691,6 +703,9 @@ func (a *Agent) Run(ctx context.Context) error {
 			Model:            a.model,
 			OpenWrtVersion:   a.openwrtVersion,
 			AgentVersion:     a.version,
+			Target:           a.target,
+			Profile:          a.profile,
+			VersionCode:      a.versionCode,
 		}
 		// Retry bootstrap with exponential backoff so transient DNS / network
 		// failures at startup (e.g. dnsmasq not ready yet) don't crash the
@@ -942,6 +957,9 @@ func (a *Agent) publishInfo(ctx context.Context) error {
 		AgentVersion:      a.version,
 		Model:             a.model,
 		OpenWrtVersion:    a.openwrtVersion,
+		Target:            a.target,
+		Profile:           a.profile,
+		VersionCode:       a.versionCode,
 		Timestamp:         time.Now().UTC().Format(time.RFC3339),
 		Capabilities:      caps,
 		Services:          services,
