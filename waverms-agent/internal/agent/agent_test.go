@@ -918,11 +918,12 @@ func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
 	}`
 	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
 
-	// State is published synchronously; ACK arrives after the watchdog confirms.
+	// State is published synchronously; ACK arrives after the watchdog confirms
+	// (from a background goroutine), so reads must go through the mock's mutex
+	// via PublishedSnapshot rather than touching mock.Published directly.
 	require.Eventually(t, func() bool {
-		mock.Published = mock.Published // read under no lock — acceptable in test
 		topics := make(map[string]bool)
-		for _, p := range mock.Published {
+		for _, p := range mock.PublishedSnapshot() {
 			topics[p.Topic] = true
 		}
 		return topics["device/test-device-uuid/ack"] && topics["device/test-device-uuid/state"]
@@ -930,7 +931,7 @@ func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
 
 	// Find the ack message.
 	var ack AckPayload
-	for _, pub := range mock.Published {
+	for _, pub := range mock.PublishedSnapshot() {
 		if pub.Topic == "device/test-device-uuid/ack" {
 			require.NoError(t, json.Unmarshal(pub.Payload, &ack))
 		}

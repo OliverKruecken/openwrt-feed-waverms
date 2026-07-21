@@ -374,6 +374,19 @@ func (m *MockMQTTClient) ConnectCount() int {
 	return len(m.ConnectOpts)
 }
 
+// PublishedSnapshot returns a copy of the messages published so far. Use this
+// instead of reading the Published field directly whenever a background
+// goroutine (e.g. the config_apply connectivity watchdog) may still be
+// publishing concurrently with the test — a direct field read in that case is
+// a data race, not just a style nit.
+func (m *MockMQTTClient) PublishedSnapshot() []PublishedMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]PublishedMsg, len(m.Published))
+	copy(out, m.Published)
+	return out
+}
+
 // Reset prepares the mock for a new connection attempt (new disconnCh).
 func (m *MockMQTTClient) Reset() {
 	m.mu.Lock()
