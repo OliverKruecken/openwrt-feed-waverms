@@ -44,17 +44,47 @@ type MQTTClient interface {
 	Disconnect()
 	// Disconnected returns a channel that is closed when the connection is lost unexpectedly.
 	Disconnected() <-chan struct{}
+	// DisconnectReason returns the error that caused the most recent unexpected
+	// disconnect (from the paho client's OnClientError/OnServerDisconnect
+	// callbacks), or nil if the current session hasn't disconnected yet.
+	// Cleared at the start of each Connect call.
+	DisconnectReason() error
+}
+
+// disconnectState holds the reason for an unexpected disconnect. It's a
+// separate object (not a *PahoClient field read directly) so that
+// OnClientError/OnServerDisconnect — which run on the paho client's internal
+// goroutines and must never block on PahoClient.mu, since Connect holds that
+// mutex for the entire handshake — only ever touch their own small mutex.
+type disconnectState struct {
+	mu     sync.Mutex
+	reason error
+}
+
+func (d *disconnectState) set(err error) {
+	d.mu.Lock()
+	if d.reason == nil { // keep the first reason; later callbacks are just noise
+		d.reason = err
+	}
+	d.mu.Unlock()
+}
+
+func (d *disconnectState) get() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.reason
 }
 
 // PahoClient wraps github.com/eclipse/paho.golang/paho and implements MQTTClient.
 type PahoClient struct {
 	tlsCfg *tls.Config
 
-	mu        sync.Mutex
-	client    *paho.Client
-	router    *paho.StandardRouter
-	disconnCh chan struct{}
-	closeOnce *sync.Once
+	mu              sync.Mutex
+	client          *paho.Client
+	router          *paho.StandardRouter
+	disconnCh       chan struct{}
+	closeOnce       *sync.Once
+	disconnectState *disconnectState
 }
 
 // NewPahoClient creates a PahoClient. Pass nil for tlsCfg to use plain TCP.
@@ -68,11 +98,13 @@ func (c *PahoClient) Connect(ctx context.Context, opts ConnectOptions) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Fresh disconnect channel and once for each connection attempt.
+	// Fresh disconnect channel, once, and reason holder for each connection attempt.
 	disconnCh := make(chan struct{})
 	closeOnce := &sync.Once{}
+	state := &disconnectState{}
 	c.disconnCh = disconnCh
 	c.closeOnce = closeOnce
+	c.disconnectState = state
 
 	addr := net.JoinHostPort(opts.BrokerHost, fmt.Sprintf("%d", opts.BrokerPort))
 
@@ -102,9 +134,11 @@ func (c *PahoClient) Connect(ctx context.Context, opts ConnectOptions) error {
 		Conn:     conn,
 		Router:   router,
 		OnClientError: func(e error) {
+			state.set(e)
 			closeOnce.Do(func() { close(disconnCh) })
 		},
-		OnServerDisconnect: func(*paho.Disconnect) {
+		OnServerDisconnect: func(d *paho.Disconnect) {
+			state.set(fmt.Errorf("server disconnect: reason code %d", d.ReasonCode))
 			closeOnce.Do(func() { close(disconnCh) })
 		},
 	}
@@ -222,6 +256,16 @@ func (c *PahoClient) Disconnected() <-chan struct{} {
 	return c.disconnCh
 }
 
+func (c *PahoClient) DisconnectReason() error {
+	c.mu.Lock()
+	state := c.disconnectState
+	c.mu.Unlock()
+	if state == nil {
+		return nil
+	}
+	return state.get()
+}
+
 // PublishedMsg records a single Publish call on MockMQTTClient.
 type PublishedMsg struct {
 	Topic   string
@@ -243,6 +287,7 @@ type MockMQTTClient struct {
 	publishErr    error // returned by Publish while publishFails > 0
 	publishFails  int   // number of upcoming Publish calls that fail
 	disconnectCnt int   // incremented by every Disconnect call
+	disconnectErr error // returned by DisconnectReason; set via SetDisconnectReason
 }
 
 // NewMockMQTTClient creates a ready-to-use mock.
@@ -267,9 +312,10 @@ func (m *MockMQTTClient) Connect(_ context.Context, opts ConnectOptions) error {
 	if m.connectErr != nil {
 		return m.connectErr
 	}
-	// Each successful Connect gets a fresh disconnect channel,
-	// mirroring the behaviour of a real MQTT connection.
+	// Each successful Connect gets a fresh disconnect channel and clears the
+	// previous disconnect reason, mirroring PahoClient.
 	m.disconnCh = make(chan struct{})
+	m.disconnectErr = nil
 	return nil
 }
 
@@ -357,6 +403,21 @@ func (m *MockMQTTClient) SimulateDisconnect() {
 	default:
 		close(ch)
 	}
+}
+
+// SetDisconnectReason makes the next DisconnectReason call return err —
+// useful for testing that a specific disconnect cause surfaces in logs.
+func (m *MockMQTTClient) SetDisconnectReason(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.disconnectErr = err
+}
+
+// DisconnectReason returns the error set via SetDisconnectReason, or nil.
+func (m *MockMQTTClient) DisconnectReason() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.disconnectErr
 }
 
 // HasSubscription returns true if the mock has a handler registered for topic.

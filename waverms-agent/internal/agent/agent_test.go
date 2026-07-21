@@ -581,6 +581,38 @@ func TestRunSession_ReconnectsAfterDisconnect(t *testing.T) {
 	assert.GreaterOrEqual(t, connectCount, 2, "expected at least 2 connect calls (initial + reconnect)")
 }
 
+// TestRunSession_SurfacesDisconnectReason guards against a real device
+// showing only a generic "connection lost" in its logs for every disconnect,
+// with no way to tell a keepalive timeout from a TCP read error from a
+// server-initiated disconnect. runSession must fold the client's actual
+// DisconnectReason into the error it returns, so "session ended, reconnecting"
+// carries the real cause.
+func TestRunSession_SurfacesDisconnectReason(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- a.runSession(ctx) }()
+
+	// Let the session finish connecting/subscribing (which clears any prior
+	// reason, mirroring PahoClient.Connect) before setting the reason a real
+	// disconnect callback would have recorded, then disconnecting.
+	time.Sleep(30 * time.Millisecond)
+	mock.SetDisconnectReason(errors.New("keepalive timeout"))
+	mock.SimulateDisconnect()
+
+	select {
+	case err := <-errCh:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "keepalive timeout")
+	case <-time.After(time.Second):
+		t.Fatal("runSession did not return after simulated disconnect")
+	}
+}
+
 func TestRun_BackoffResetsAfterHealthySession(t *testing.T) {
 	// After a session that runs longer than sessionHealthyThreshold the reconnect
 	// backoff must reset to 1 s, not accumulate toward 300 s.

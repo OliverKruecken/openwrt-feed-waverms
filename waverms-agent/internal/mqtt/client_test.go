@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,4 +143,35 @@ func TestPahoClient_DisconnectedBeforeConnect_ReturnsNilChannel(t *testing.T) {
 	// before connecting — this test documents current behaviour.
 	ch := c.Disconnected()
 	assert.Nil(t, ch, "Disconnected() returns nil before Connect is called")
+}
+
+func TestPahoClient_DisconnectReasonBeforeConnect_ReturnsNil(t *testing.T) {
+	c := NewPahoClient(nil)
+	assert.NoError(t, c.DisconnectReason())
+}
+
+func TestDisconnectState_SetGet_KeepsFirstReason(t *testing.T) {
+	s := &disconnectState{}
+	assert.NoError(t, s.get(), "no reason set yet")
+
+	s.set(assert.AnError)
+	assert.ErrorIs(t, s.get(), assert.AnError)
+
+	// A later call (e.g. OnServerDisconnect firing after OnClientError already
+	// did) must not overwrite the first recorded reason.
+	s.set(fmt.Errorf("a different, later error"))
+	assert.ErrorIs(t, s.get(), assert.AnError, "first reason must win")
+}
+
+func TestMockMQTTClient_DisconnectReason(t *testing.T) {
+	m := NewMockMQTTClient()
+	assert.NoError(t, m.DisconnectReason())
+
+	m.SetDisconnectReason(assert.AnError)
+	assert.ErrorIs(t, m.DisconnectReason(), assert.AnError)
+
+	// Connect clears the previous reason, mirroring PahoClient starting a
+	// fresh disconnectState per connection attempt.
+	require.NoError(t, m.Connect(context.Background(), ConnectOptions{}))
+	assert.NoError(t, m.DisconnectReason())
 }

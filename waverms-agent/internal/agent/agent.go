@@ -966,6 +966,9 @@ func (a *Agent) runSession(ctx context.Context) error {
 			a.mqtt.Disconnect()
 			return nil
 		case <-disconnCh:
+			if reason := a.mqtt.DisconnectReason(); reason != nil {
+				return fmt.Errorf("connection lost: %w", reason)
+			}
 			return fmt.Errorf("connection lost")
 		case <-ticker.C:
 			if err := a.publishInfo(ctx); err != nil {
