@@ -55,7 +55,19 @@ func main() {
 	if cfg.Debug {
 		logLevel = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
+
+	// Persist agent activity to /etc/waverms/agent.log (survives reboot, unlike
+	// the syslog ring buffer) so a slow-reconnecting device can be diagnosed after
+	// the fact. A broken log file must never stop the agent from booting, so a
+	// failure here just falls back to stderr-only logging.
+	activityLog, err := agent.NewActivityLogHandler(textHandler)
+	if err != nil {
+		slog.SetDefault(slog.New(textHandler))
+		slog.Warn("activity log: failed to open persistent log file, continuing without it", "err", err)
+	} else {
+		slog.SetDefault(slog.New(activityLog))
+	}
 	log.SetFlags(0) // slog handler owns timestamps
 	slog.Info("waverms-agent starting",
 		"version", Version,
@@ -93,6 +105,7 @@ func main() {
 		MQTT:           mqttclient.NewPahoClient(tlsCfg),
 		UCI:            &uci.RealUCIRunner{},
 		Version:        Version,
+		ActivityLog:    activityLog,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

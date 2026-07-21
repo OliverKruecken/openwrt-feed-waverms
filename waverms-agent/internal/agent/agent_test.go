@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1912,4 +1913,83 @@ func TestPublishInfo_OmitsHostKeyFingerprints(t *testing.T) {
 	require.NoError(t, a.publishInfo(context.Background()))
 
 	assert.NotContains(t, string(mqttMock.Published[0].Payload), "host_key_fingerprints")
+}
+
+// --- log_control tests ---------------------------------------------------------
+
+func newTestAgentWithActivityLog(t *testing.T, mock *mqttclient.MockMQTTClient) (*Agent, *ActivityLogHandler) {
+	t.Helper()
+	dir := t.TempDir()
+	origPath := activityLogPath
+	activityLogPath = filepath.Join(dir, "agent.log")
+	t.Cleanup(func() { activityLogPath = origPath })
+
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+	h, err := NewActivityLogHandler(slog.NewTextHandler(io.Discard, nil))
+	require.NoError(t, err)
+	a.activityLog = h
+	return a, h
+}
+
+func TestHandleCommand_LogControl_ValidPayload_AcksOkAndToggles(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a, h := newTestAgentWithActivityLog(t, mock)
+
+	payload := `{"cmd_id":"lc-1","type":"log_control","payload":{"enabled":false}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "lc-1", ack.CmdID)
+	assert.Equal(t, "ok", ack.Status)
+	assert.False(t, h.enabled.Load())
+
+	payload2 := `{"cmd_id":"lc-2","type":"log_control","payload":{"enabled":true}}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload2))
+	assert.True(t, h.enabled.Load())
+}
+
+func TestHandleCommand_LogControl_InvalidPayload_AcksError(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a, h := newTestAgentWithActivityLog(t, mock)
+	h.SetEnabled(true)
+
+	payload := `{"cmd_id":"lc-3","type":"log_control","payload":"not-an-object"}`
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "lc-3", ack.CmdID)
+	assert.Equal(t, "error", ack.Status)
+	assert.True(t, h.enabled.Load(), "state must remain unchanged after an invalid payload")
+}
+
+func TestHandleCommand_LogControl_NilActivityLog_NoPanic(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+	// a.activityLog is nil — must not panic, and should still ack "ok".
+
+	payload := `{"cmd_id":"lc-4","type":"log_control","payload":{"enabled":false}}`
+	assert.NotPanics(t, func() {
+		a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+	})
+
+	require.Len(t, mock.Published, 1)
+	var ack AckPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &ack))
+	assert.Equal(t, "ok", ack.Status)
+}
+
+func TestPublishInfo_CapabilitiesContainLogControl(t *testing.T) {
+	mock := mqttclient.NewMockMQTTClient()
+	a := newTestAgent(mock, &uci.MockUCIRunner{})
+
+	err := a.publishInfo(context.Background())
+	require.NoError(t, err)
+
+	var info InfoPayload
+	require.NoError(t, json.Unmarshal(mock.Published[0].Payload, &info))
+	assert.Contains(t, info.Capabilities, "log_control")
 }

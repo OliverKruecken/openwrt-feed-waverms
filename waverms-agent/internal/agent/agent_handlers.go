@@ -429,3 +429,25 @@ func (a *Agent) handleServiceApply(cmd Command) {
 	}
 	a.publishAck(cmd.CmdID, "ok", "")
 }
+
+type logControlPayload struct {
+	Enabled bool `json:"enabled"`
+}
+
+// handleLogControl toggles the persistent activity log file at runtime
+// (device.log survives reboots and is enabled by default — see
+// internal/agent/activitylog.go). Nil-safe: if the log file failed to open
+// at startup, a.activityLog is nil and this is a no-op ack "ok".
+func (a *Agent) handleLogControl(cmd Command) {
+	var p logControlPayload
+	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
+		slog.Error("invalid log_control payload", "cmd_id", cmd.CmdID, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+	if a.activityLog != nil {
+		a.activityLog.SetEnabled(p.Enabled)
+	}
+	slog.Info("log_control applied", "cmd_id", cmd.CmdID, "enabled", p.Enabled)
+	a.publishAck(cmd.CmdID, "ok", "")
+}

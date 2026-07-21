@@ -320,6 +320,7 @@ var supportedCapabilities = []string{
 	"apk_report",
 	"apk_manage",
 	"sysupgrade",
+	"log_control",
 }
 
 // fallbackStatePackages is used only when /etc/config cannot be read.
@@ -424,6 +425,12 @@ type Options struct {
 	// AckRetryDelay is the pause between ack publish retry attempts (useful in
 	// tests). Defaults to 5 s.
 	AckRetryDelay time.Duration
+	// ActivityLog persists agent log records to a local file across reboots.
+	// Constructed once in main.go (the only place that should perform the
+	// real file I/O — see the nil-safe fallback in New() below) and reused
+	// here so bootstrap-phase and session-phase log lines land in the same
+	// file. Nil if the file could not be opened at startup, or in tests.
+	ActivityLog *ActivityLogHandler
 }
 
 // Agent is the main runtime component.
@@ -451,6 +458,7 @@ type Agent struct {
 	bootstrapTokenWaitTimeout time.Duration
 	credsPath                 string
 	debugHandler              *mqttDebugHandler
+	activityLog               *ActivityLogHandler
 	cmdHandlers               map[string]func(Command)
 	ackRetryDelay             time.Duration
 
@@ -606,6 +614,7 @@ func New(opts *Options) *Agent {
 		bootstrapTokenPath:        tokenPath,
 		bootstrapTokenWaitTimeout: tokenWait,
 		credsPath:                 credsPath,
+		activityLog:               opts.ActivityLog,
 		cleanStartSentinelPath:    sentinelPath,
 		ackRetryDelay:             ackRetryDelay,
 	}
@@ -631,6 +640,7 @@ func New(opts *Options) *Agent {
 		"apk_report":       a.handleApkReport,
 		"apk_manage":       a.handleApkManage,
 		"sysupgrade":       a.handleSysupgrade,
+		"log_control":      a.handleLogControl,
 	}
 	return a
 }
@@ -761,15 +771,22 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	// Replace the global slog default with the MQTT-aware debug handler now that we
-	// have credentials. A fresh TextHandler is used as the inner handler to avoid a
-	// circular dependency: slog.Default().Handler() (the stdlib defaultHandler) routes
-	// writes back through log, but slog.SetDefault redirects log → our handler → cycle.
+	// have credentials. If main.go constructed a persistent ActivityLogHandler, reuse
+	// it here so bootstrap-phase and session-phase log lines land in the same file
+	// (and so the file is only ever opened by main.go — see the ActivityLog doc
+	// comment on Options, and the nil branch below, which must stay pure in-memory
+	// so tests that build an Agent directly via New() never touch the real filesystem).
 	localLevel := slog.LevelInfo
 	if a.cfg.Debug {
 		localLevel = slog.LevelDebug
 	}
-	textHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: localLevel})
-	a.debugHandler = newMQTTDebugHandler(textHandler, a.mqtt, a.creds.DeviceID)
+	var innerHandler slog.Handler
+	if a.activityLog != nil {
+		innerHandler = a.activityLog
+	} else {
+		innerHandler = slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: localLevel})
+	}
+	a.debugHandler = newMQTTDebugHandler(innerHandler, a.mqtt, a.creds.DeviceID)
 	slog.SetDefault(slog.New(a.debugHandler))
 	log.SetFlags(0) // TextHandler owns timestamps; avoid double prefix on log.Printf calls
 
