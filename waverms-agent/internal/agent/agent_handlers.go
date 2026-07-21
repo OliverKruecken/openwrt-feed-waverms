@@ -54,6 +54,15 @@ func (a *Agent) handleUCISet(cmd Command) {
 }
 
 func (a *Agent) handleConfigApply(cmd Command) {
+	if a.isDuplicateConfigApply(cmd.CmdID) {
+		// Broker redelivery of an already in-flight apply — the original
+		// watchdog is still running and will send the one ack for this
+		// cmd_id when it resolves. Reprocessing here would apply the same
+		// config twice and race a second watchdog against the first.
+		slog.Warn("config_apply: duplicate delivery while watchdog still in flight, ignoring", "cmd_id", cmd.CmdID)
+		return
+	}
+
 	// Extract package names so we can backup before applying.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(cmd.Payload, &raw); err != nil {

@@ -661,6 +661,22 @@ func (a *Agent) clearWatchdogConfirm(cmdID string) {
 	a.confirmMu.Unlock()
 }
 
+// isDuplicateConfigApply reports whether cmdID matches the config_apply
+// currently tracked by an in-flight connectivity watchdog.
+//
+// The broker redelivers an un-acked QoS-1 command whenever the session drops
+// before the client's ack for it round-trips — exactly what a config_apply
+// that restarts networking tends to trigger. Without this guard the agent
+// would reprocess the same apply from scratch on redelivery: a second
+// backup+reload+watchdog racing the still-running original, which can
+// observe no session yet at its own start and roll back a change that was
+// never actually in trouble.
+func (a *Agent) isDuplicateConfigApply(cmdID string) bool {
+	a.confirmMu.Lock()
+	defer a.confirmMu.Unlock()
+	return a.confirmCmdID == cmdID
+}
+
 // signalWatchdogConfirm closes the stored confirm channel if cmdID matches the
 // active watchdog. Returns true when the signal was delivered.
 func (a *Agent) signalWatchdogConfirm(cmdID string) bool {

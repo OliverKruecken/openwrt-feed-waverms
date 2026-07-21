@@ -945,6 +945,72 @@ func TestHandleCommand_ConfigApply_SuccessAcksAndPublishesState(t *testing.T) {
 	assert.Contains(t, uciMock.Calls, "commit system")
 }
 
+// TestHandleCommand_ConfigApply_DuplicateDelivery_Ignored guards against a
+// regression seen on a real device: the broker redelivers an un-acked
+// config_apply after a mid-apply disconnect (the reconfigured network itself
+// breaks connectivity before the client's ack round-trips). Before this
+// fix, the redelivered command was reprocessed from scratch -- a second
+// backup+reload+watchdog racing the still-running original -- which could
+// observe no session yet at its own start and roll back a change that was
+// never actually in trouble.
+func TestHandleCommand_ConfigApply_DuplicateDelivery_Ignored(t *testing.T) {
+	// Long enough that the original watchdog cannot resolve on its own
+	// during this test, so confirmCmdID stays populated for the duration.
+	origTimeout := connectivityWatchdogTimeout
+	connectivityWatchdogTimeout = time.Hour
+	t.Cleanup(func() { connectivityWatchdogTimeout = origTimeout })
+
+	mock := mqttclient.NewMockMQTTClient()
+	uciMock := &uci.MockUCIRunner{
+		Results: map[string]string{
+			"export system": systemUCIOutput,
+		},
+	}
+	a := newTestAgent(mock, uciMock)
+	a.setSessionDisconnCh(make(chan struct{}))
+
+	payload := `{
+		"cmd_id": "dup-1",
+		"type": "config_apply",
+		"payload": {
+			"system": {
+				".mode": "merge",
+				"system": [{ ".name": "system", "hostname": "router-01" }]
+			}
+		}
+	}`
+
+	// First delivery: applies the config and leaves a watchdog in flight.
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+	require.True(t, a.isDuplicateConfigApply("dup-1"), "watchdog for dup-1 must be tracked as in-flight")
+	callsAfterFirst := len(uciMock.Calls)
+
+	// Second delivery: broker redelivery of the same un-acked command. Must
+	// be dropped, not reprocessed.
+	a.handleCommand("device/test-device-uuid/cmd", []byte(payload))
+	assert.Equal(t, callsAfterFirst, len(uciMock.Calls), "duplicate delivery must not reapply the config")
+
+	// Resolve the original watchdog and confirm exactly one ack was sent for
+	// the deduplicated cmd_id -- not two.
+	require.True(t, a.signalWatchdogConfirm("dup-1"))
+	require.Eventually(t, func() bool {
+		for _, p := range mock.PublishedSnapshot() {
+			if p.Topic == "device/test-device-uuid/ack" {
+				return true
+			}
+		}
+		return false
+	}, 500*time.Millisecond, 5*time.Millisecond)
+
+	ackCount := 0
+	for _, p := range mock.PublishedSnapshot() {
+		if p.Topic == "device/test-device-uuid/ack" {
+			ackCount++
+		}
+	}
+	assert.Equal(t, 1, ackCount, "exactly one ack must be sent for the deduplicated cmd_id")
+}
+
 func TestHandleCommand_ConfigApply_StagingError_AcksError(t *testing.T) {
 	mock := mqttclient.NewMockMQTTClient()
 	uciMock := &uci.MockUCIRunner{
