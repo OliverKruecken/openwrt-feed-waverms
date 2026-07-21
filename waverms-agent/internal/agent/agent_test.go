@@ -1326,10 +1326,13 @@ func TestRunSession_PublishesStatePeriodically(t *testing.T) {
 	}()
 
 	// One state publish happens immediately on connect; wait for a second,
-	// periodic one to confirm the ticker fires.
+	// periodic one to confirm the ticker fires. runSession runs in its own
+	// goroutine and keeps publishing concurrently, so reads must go through
+	// the mock's mutex via PublishedSnapshot rather than touching
+	// mock.Published directly.
 	require.Eventually(t, func() bool {
 		count := 0
-		for _, p := range mock.Published {
+		for _, p := range mock.PublishedSnapshot() {
 			if p.Topic == "device/test-device-uuid/state" {
 				count++
 			}
