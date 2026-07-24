@@ -143,8 +143,7 @@ func (a *Agent) handleApkReport(cmd Command) {
 // handleApkManage runs `apk del <remove>` then `apk add <install>` and ACKs ok/error.
 func (a *Agent) handleApkManage(cmd Command) {
 	var payload ApkManagePayload
-	if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
-		a.publishAck(cmd.CmdID, "error", "invalid payload: "+err.Error())
+	if !a.decodeOrAck(cmd, &payload) {
 		return
 	}
 

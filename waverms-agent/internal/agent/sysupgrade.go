@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -165,8 +164,7 @@ func (a *Agent) handleSysupgrade(cmd Command) {
 		Version    string `json:"version"`
 		KeepConfig bool   `json:"keep_config"`
 	}
-	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("malformed payload: %v", err))
+	if !a.decodeOrAck(cmd, &p) {
 		return
 	}
 	if p.URL == "" || p.SHA256 == "" {

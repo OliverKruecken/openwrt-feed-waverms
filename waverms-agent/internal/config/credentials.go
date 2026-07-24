@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,35 +23,16 @@ func (c *Credentials) HasCredentials() bool {
 
 // LoadCredentials reads credentials from path. Returns an empty Credentials (not an error)
 // if the file does not exist – callers should check HasCredentials().
+//
+// Inline comments are NOT stripped (stripInlineComments=false passed to
+// scanKeyValueFile): credentials are machine-written by SaveCredentials and
+// never contain comments, and stripping " #" would silently truncate a
+// SECRET or DEVICE_ID that happens to contain that byte sequence, causing
+// MQTT authentication failures with no obvious error message.
 func LoadCredentials(path string) (*Credentials, error) {
 	creds := &Credentials{}
 
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return creds, nil
-		}
-		return nil, fmt.Errorf("open credentials %s: %w", path, err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		// Do NOT strip inline comments here. Credentials are machine-written by
-		// SaveCredentials and never contain comments. Stripping " #" would silently
-		// truncate a SECRET or DEVICE_ID that happens to contain that byte sequence,
-		// causing MQTT authentication failures with no obvious error message.
-
+	err := scanKeyValueFile(path, false, func(key, value string) {
 		switch key {
 		case "DEVICE_ID":
 			creds.DeviceID = value
@@ -65,9 +45,8 @@ func LoadCredentials(path string) (*Credentials, error) {
 				creds.BrokerPort = p
 			}
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("scan credentials %s: %w", path, err)
 	}
 

@@ -28,6 +28,69 @@ const (
 	defaultStateInterval     = 600
 )
 
+// applyConfigKey maps a single key=value pair from a config file onto the
+// matching Config field. Unknown keys are ignored.
+func applyConfigKey(cfg *Config, key, value string) {
+	switch key {
+	case "BROKER_HOST":
+		cfg.BrokerHost = value
+	case "BROKER_PORT":
+		if p, err := strconv.Atoi(value); err == nil {
+			cfg.BrokerPort = p
+		}
+	case "TLS_INSECURE":
+		cfg.TLSInsecure = strings.EqualFold(value, "true")
+	case "HEARTBEAT_INTERVAL":
+		if v, err := strconv.Atoi(value); err == nil {
+			cfg.HeartbeatInterval = v
+		}
+	case "STATE_INTERVAL":
+		if v, err := strconv.Atoi(value); err == nil {
+			cfg.StateInterval = v
+		}
+	case "AGENT_VERSION":
+		cfg.AgentVersion = value
+	case "DEBUG":
+		cfg.Debug = strings.EqualFold(value, "true")
+	}
+}
+
+// scanKeyValueFile opens path and calls fn(key, value) for each key=value
+// line, skipping blank lines and full-line comments (#). A missing file is
+// not an error — fn is simply never called. When stripInlineComments is
+// true, a trailing " #..." on the value is removed before fn is called.
+func scanKeyValueFile(path string, stripInlineComments bool, fn func(key, value string)) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if stripInlineComments {
+			if idx := strings.Index(value, " #"); idx >= 0 {
+				value = strings.TrimSpace(value[:idx])
+			}
+		}
+		fn(key, value)
+	}
+	return scanner.Err()
+}
+
 // Load reads the config file at path and returns a Config.
 // Missing keys fall back to defaults. A missing file is not an error – defaults are used.
 func Load(path string) (*Config, error) {
@@ -38,58 +101,10 @@ func Load(path string) (*Config, error) {
 		AgentVersion:      "1.0.0",
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
-		return nil, fmt.Errorf("open config %s: %w", path, err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		// strip inline comment
-		if idx := strings.Index(value, " #"); idx >= 0 {
-			value = strings.TrimSpace(value[:idx])
-		}
-
-		switch key {
-		case "BROKER_HOST":
-			cfg.BrokerHost = value
-		case "BROKER_PORT":
-			if p, err := strconv.Atoi(value); err == nil {
-				cfg.BrokerPort = p
-			}
-		case "TLS_INSECURE":
-			cfg.TLSInsecure = strings.EqualFold(value, "true")
-		case "HEARTBEAT_INTERVAL":
-			if v, err := strconv.Atoi(value); err == nil {
-				cfg.HeartbeatInterval = v
-			}
-		case "STATE_INTERVAL":
-			if v, err := strconv.Atoi(value); err == nil {
-				cfg.StateInterval = v
-			}
-		case "AGENT_VERSION":
-			cfg.AgentVersion = value
-		case "DEBUG":
-			cfg.Debug = strings.EqualFold(value, "true")
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan config %s: %w", path, err)
+	if err := scanKeyValueFile(path, true, func(key, value string) {
+		applyConfigKey(cfg, key, value)
+	}); err != nil {
+		return nil, err
 	}
 
 	return cfg, nil
@@ -98,34 +113,13 @@ func Load(path string) (*Config, error) {
 // loadKeys parses a key=value config file at path and returns a map of keys to
 // values using the same format as Load. A missing file is not an error.
 func loadKeys(path string) (map[string]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]string{}, nil
-		}
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-
 	out := map[string]string{}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		if idx := strings.Index(value, " #"); idx >= 0 {
-			value = strings.TrimSpace(value[:idx])
-		}
+	if err := scanKeyValueFile(path, true, func(key, value string) {
 		out[key] = value
+	}); err != nil {
+		return nil, err
 	}
-	return out, scanner.Err()
+	return out, nil
 }
 
 // LoadWithOverlay reads the static config at staticPath and then overlays keys
@@ -141,28 +135,7 @@ func LoadWithOverlay(staticPath, dhcpPath string) (*Config, error) {
 		return nil, fmt.Errorf("dhcp config: %w", err)
 	}
 	for key, value := range overlay {
-		switch key {
-		case "BROKER_HOST":
-			cfg.BrokerHost = value
-		case "BROKER_PORT":
-			if p, err := strconv.Atoi(value); err == nil {
-				cfg.BrokerPort = p
-			}
-		case "TLS_INSECURE":
-			cfg.TLSInsecure = strings.EqualFold(value, "true")
-		case "HEARTBEAT_INTERVAL":
-			if v, err := strconv.Atoi(value); err == nil {
-				cfg.HeartbeatInterval = v
-			}
-		case "STATE_INTERVAL":
-			if v, err := strconv.Atoi(value); err == nil {
-				cfg.StateInterval = v
-			}
-		case "AGENT_VERSION":
-			cfg.AgentVersion = value
-		case "DEBUG":
-			cfg.Debug = strings.EqualFold(value, "true")
-		}
+		applyConfigKey(cfg, key, value)
 	}
 	return cfg, nil
 }

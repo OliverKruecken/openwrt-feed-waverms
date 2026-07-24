@@ -146,16 +146,17 @@ func (a *Applier) stagePackage(pkgName string, pkgCfg map[string]json.RawMessage
 	return nil
 }
 
-// listUnnamedSections returns the @type[index] identifiers for all existing
-// anonymous sections of sectionType in pkgName. Returns nil if the package
-// doesn't exist yet or has no anonymous sections of that type.
-func (a *Applier) listUnnamedSections(pkgName, sectionType string) []string {
-	out, err := a.runner.Show(pkgName)
-	if err != nil {
-		return nil
-	}
-	prefix := pkgName + "."
-	var ids []string
+// showEntry is one parsed "id=value" line from `uci show <pkg>` output, with
+// prefix already stripped from id.
+type showEntry struct {
+	id    string
+	value string
+}
+
+// parseShowLines splits uci show output into entries whose line starts with
+// prefix (stripped from id before returning). Lines without "=" are skipped.
+func parseShowLines(out, prefix string) []showEntry {
+	var entries []showEntry
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, prefix) {
@@ -166,14 +167,27 @@ func (a *Applier) listUnnamedSections(pkgName, sectionType string) []string {
 		if eqIdx < 0 {
 			continue
 		}
-		sectionID := rest[:eqIdx]
-		typeVal := strings.TrimSpace(rest[eqIdx+1:])
+		entries = append(entries, showEntry{id: rest[:eqIdx], value: strings.TrimSpace(rest[eqIdx+1:])})
+	}
+	return entries
+}
+
+// listUnnamedSections returns the @type[index] identifiers for all existing
+// anonymous sections of sectionType in pkgName. Returns nil if the package
+// doesn't exist yet or has no anonymous sections of that type.
+func (a *Applier) listUnnamedSections(pkgName, sectionType string) []string {
+	out, err := a.runner.Show(pkgName)
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, entry := range parseShowLines(out, pkgName+".") {
 		// Anonymous sections start with '@'; skip option lines (contain ".").
-		if !strings.HasPrefix(sectionID, "@") || strings.Contains(sectionID, ".") {
+		if !strings.HasPrefix(entry.id, "@") || strings.Contains(entry.id, ".") {
 			continue
 		}
-		if typeVal == sectionType {
-			ids = append(ids, sectionID)
+		if entry.value == sectionType {
+			ids = append(ids, entry.id)
 		}
 	}
 	return ids
@@ -190,29 +204,17 @@ func (a *Applier) deleteUnwantedSections(pkgName, sectionType string, keepNames 
 		// Package doesn't exist yet — nothing to delete.
 		return nil
 	}
-	prefix := pkgName + "."
 	var toDelete []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, prefix) {
+	for _, entry := range parseShowLines(out, pkgName+".") {
+		// Skip option lines — they contain a "." in the id (e.g. "wan.proto").
+		if strings.Contains(entry.id, ".") {
 			continue
 		}
-		rest := strings.TrimPrefix(line, prefix)
-		eqIdx := strings.Index(rest, "=")
-		if eqIdx < 0 {
+		if entry.value != sectionType {
 			continue
 		}
-		sectionID := rest[:eqIdx]
-		typeVal := strings.TrimSpace(rest[eqIdx+1:])
-		// Skip option lines — they contain a "." in sectionID (e.g. "wan.proto").
-		if strings.Contains(sectionID, ".") {
-			continue
-		}
-		if typeVal != sectionType {
-			continue
-		}
-		if !keepNames[sectionID] {
-			toDelete = append(toDelete, sectionID)
+		if !keepNames[entry.id] {
+			toDelete = append(toDelete, entry.id)
 		}
 	}
 	// Delete in reverse order: removing @type[0] would shift @type[1] → @type[0],
@@ -292,18 +294,8 @@ func (a *Applier) cleanStaleOptions(pkgName, sectionID string, desiredKeys map[s
 	if err != nil {
 		return nil // package not committed yet — nothing to clean
 	}
-	prefix := pkgName + "." + sectionID + "."
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, prefix) {
-			continue
-		}
-		rest := strings.TrimPrefix(line, prefix)
-		eqIdx := strings.Index(rest, "=")
-		if eqIdx < 0 {
-			continue
-		}
-		optKey := rest[:eqIdx]
+	for _, entry := range parseShowLines(out, pkgName+"."+sectionID+".") {
+		optKey := entry.id
 		// Skip dot-prefixed meta-keys and nested paths (sub-option lines).
 		if strings.HasPrefix(optKey, ".") || strings.Contains(optKey, ".") {
 			continue

@@ -14,11 +14,28 @@ import (
 	"github.com/OliverKruecken/waverms-agent/internal/apply"
 )
 
+// decodeOrAck unmarshals cmd.Payload into out. On failure it logs the
+// failure, publishes an "invalid payload" error ack for cmd, and returns
+// false; callers should return immediately when false comes back.
+func (a *Agent) decodeOrAck(cmd Command, out any) bool {
+	if err := json.Unmarshal(cmd.Payload, out); err != nil {
+		slog.Error("invalid command payload", "cmd_id", cmd.CmdID, "type", cmd.Type, "err", err)
+		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+		return false
+	}
+	return true
+}
+
+// ackOkAndReport sends a success ack for cmd and re-publishes state so the
+// backend sees the change without waiting for the next heartbeat.
+func (a *Agent) ackOkAndReport(cmdID, trigger string) {
+	a.publishAck(cmdID, "ok", "")
+	a.publishStateAfterSuccess(trigger)
+}
+
 func (a *Agent) handleUCISet(cmd Command) {
 	var uciPayload UCICommandPayload
-	if err := json.Unmarshal(cmd.Payload, &uciPayload); err != nil {
-		slog.Error("invalid uci_set payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &uciPayload) {
 		return
 	}
 
@@ -65,9 +82,7 @@ func (a *Agent) handleConfigApply(cmd Command) {
 
 	// Extract package names so we can backup before applying.
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(cmd.Payload, &raw); err != nil {
-		slog.Error("config_apply: unmarshal payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &raw) {
 		return
 	}
 	var pkgNames []string
@@ -120,9 +135,7 @@ func (a *Agent) handleConfigApply(cmd Command) {
 
 func (a *Agent) handleFileWrite(cmd Command) {
 	var fwPayload FileWriteCommandPayload
-	if err := json.Unmarshal(cmd.Payload, &fwPayload); err != nil {
-		slog.Error("invalid file_write payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &fwPayload) {
 		return
 	}
 	if fwPayload.Path == "" {
@@ -166,15 +179,12 @@ func (a *Agent) handleFileWrite(cmd Command) {
 		return
 	}
 	slog.Info("file_write succeeded", "cmd_id", cmd.CmdID, "path", fwPayload.Path)
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("file_write")
+	a.ackOkAndReport(cmd.CmdID, "file_write")
 }
 
 func (a *Agent) handleHostKeyRestore(cmd Command) {
 	var hkPayload HostKeyRestorePayload
-	if err := json.Unmarshal(cmd.Payload, &hkPayload); err != nil {
-		slog.Error("invalid host_key_restore payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &hkPayload) {
 		return
 	}
 	if len(hkPayload.Keys) == 0 {
@@ -205,8 +215,7 @@ func (a *Agent) handleHostKeyRestore(cmd Command) {
 		slog.Warn("host_key_restore: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
 	}
 	slog.Info("host_key_restore succeeded", "cmd_id", cmd.CmdID, "files", len(hkPayload.Keys))
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("host_key_restore")
+	a.ackOkAndReport(cmd.CmdID, "host_key_restore")
 }
 
 func (a *Agent) handleHostKeyRemove(cmd Command) {
@@ -226,8 +235,7 @@ func (a *Agent) handleHostKeyRemove(cmd Command) {
 		slog.Warn("host_key_remove: service restart failed (non-fatal)", "cmd_id", cmd.CmdID, "daemon", a.sshDaemon.Name, "err", err)
 	}
 	slog.Info("host_key_remove succeeded", "cmd_id", cmd.CmdID, "removed", removed)
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("host_key_remove")
+	a.ackOkAndReport(cmd.CmdID, "host_key_remove")
 }
 
 type setPasswordPayload struct {
@@ -237,9 +245,7 @@ type setPasswordPayload struct {
 
 func (a *Agent) handleSetPassword(cmd Command) {
 	var p setPasswordPayload
-	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-		slog.Error("invalid set_password payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &p) {
 		return
 	}
 	if p.Target != "root" {
@@ -257,8 +263,7 @@ func (a *Agent) handleSetPassword(cmd Command) {
 		return
 	}
 	slog.Info("set_password succeeded", "cmd_id", cmd.CmdID, "target", p.Target)
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("set_password")
+	a.ackOkAndReport(cmd.CmdID, "set_password")
 }
 
 func (a *Agent) handleHostKeyFetch(cmd Command) {
@@ -298,9 +303,7 @@ type tlsCertPushPayload struct {
 
 func (a *Agent) handleTlsCertPush(cmd Command) {
 	var p tlsCertPushPayload
-	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-		slog.Error("invalid tls_cert_push payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &p) {
 		return
 	}
 	if p.CertPEM == "" || p.KeyPEM == "" {
@@ -344,8 +347,7 @@ func (a *Agent) handleTlsCertPush(cmd Command) {
 	a.setTLSCertPaths(p.CertPath, p.KeyPath)
 
 	slog.Info("tls_cert_push succeeded", "cmd_id", cmd.CmdID, "cert_path", p.CertPath, "key_path", p.KeyPath)
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("tls_cert_push")
+	a.ackOkAndReport(cmd.CmdID, "tls_cert_push")
 }
 
 // defaultTLSKeyPath is the key file counterpart to defaultTLSCertPath.
@@ -374,23 +376,19 @@ func (a *Agent) handleTlsCertRemove(cmd Command) {
 
 	a.setTLSCertPaths("", "")
 	slog.Info("tls_cert_remove succeeded", "cmd_id", cmd.CmdID, "cert_path", certPath, "key_path", keyPath)
-	a.publishAck(cmd.CmdID, "ok", "")
-	a.publishStateAfterSuccess("tls_cert_remove")
+	a.ackOkAndReport(cmd.CmdID, "tls_cert_remove")
 }
 
 // isTlsCertPathAllowed validates that the path starts with /etc/ or /tmp/ after cleaning.
 func isTlsCertPathAllowed(path string) bool {
-	clean := filepath.Clean(path)
-	return strings.HasPrefix(clean, "/etc/") || strings.HasPrefix(clean, "/tmp/")
+	return pathHasAllowedPrefix(path, tlsCertAllowedDirs)
 }
 
 func (a *Agent) handleServiceApply(cmd Command) {
 	var p struct {
 		Services map[string]bool `json:"services"`
 	}
-	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-		slog.Error("service_apply: invalid payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &p) {
 		return
 	}
 
@@ -449,9 +447,7 @@ type logControlPayload struct {
 // at startup, a.activityLog is nil and this is a no-op ack "ok".
 func (a *Agent) handleLogControl(cmd Command) {
 	var p logControlPayload
-	if err := json.Unmarshal(cmd.Payload, &p); err != nil {
-		slog.Error("invalid log_control payload", "cmd_id", cmd.CmdID, "err", err)
-		a.publishAck(cmd.CmdID, "error", fmt.Sprintf("invalid payload: %v", err))
+	if !a.decodeOrAck(cmd, &p) {
 		return
 	}
 	if a.activityLog != nil {

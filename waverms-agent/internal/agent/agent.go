@@ -290,16 +290,25 @@ var fileWriteAllowedDirs = []string{
 	"/tmp/",
 }
 
-// isFileWritePathAllowed returns true when path, after filepath.Clean, begins
-// with one of the entries in fileWriteAllowedDirs.
-func isFileWritePathAllowed(path string) bool {
+// tlsCertAllowedDirs is the directory allowlist for tls_cert_push/remove paths.
+var tlsCertAllowedDirs = []string{"/etc/", "/tmp/"}
+
+// pathHasAllowedPrefix returns true when path, after filepath.Clean, begins
+// with one of prefixes.
+func pathHasAllowedPrefix(path string, prefixes []string) bool {
 	clean := filepath.Clean(path)
-	for _, prefix := range fileWriteAllowedDirs {
+	for _, prefix := range prefixes {
 		if strings.HasPrefix(clean, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+// isFileWritePathAllowed returns true when path, after filepath.Clean, begins
+// with one of the entries in fileWriteAllowedDirs.
+func isFileWritePathAllowed(path string) bool {
+	return pathHasAllowedPrefix(path, fileWriteAllowedDirs)
 }
 
 // supportedCapabilities is the list of command types this agent version supports.
