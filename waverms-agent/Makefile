@@ -4,13 +4,17 @@ PKG_NAME:=waverms-agent
 PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
-PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/OliverKruecken/waverms-agent/tar.gz/v$(PKG_VERSION)?
+PKG_HASH:=e5c154670fd5b14f7b675b6532516dd6b119af573db42b72e4909585c6209303
+
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE
+PKG_MAINTAINER:=Oliver Kruecken <okruecken@pdfmodel.org>
 
 GO_PKG:=github.com/OliverKruecken/waverms-agent
 GO_PKG_BUILD_PKG:=$(GO_PKG)
@@ -24,7 +28,7 @@ define Package/waverms-agent
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=WaveRMS Remote Management Agent
-  MAINTAINER:=Oliver Kruecken <okruecken@pdfmodel.org>
+  URL:=https://github.com/OliverKruecken/waverms-agent
   DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle
 endef
 
@@ -36,15 +40,6 @@ endef
 
 define Package/waverms-agent/conffiles
 /etc/waverms/config
-endef
-
-define Build/Prepare
-	mkdir -p $(PKG_BUILD_DIR)
-	$(CP) $(CURDIR)/go.mod $(PKG_BUILD_DIR)/
-	$(CP) $(CURDIR)/go.sum $(PKG_BUILD_DIR)/
-	$(CP) $(CURDIR)/main.go $(PKG_BUILD_DIR)/
-	$(CP) $(CURDIR)/internal $(PKG_BUILD_DIR)/
-	$(CP) $(CURDIR)/../LICENSE $(PKG_BUILD_DIR)/
 endef
 
 define Package/waverms-agent/install
