@@ -1,2 +1,2 @@
-BROKER_HOST=mosquitto.moortwiete.de
+BROKER_HOST=mqtt.example.com
 BROKER_PORT=8883
