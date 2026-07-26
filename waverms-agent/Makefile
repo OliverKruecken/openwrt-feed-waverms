@@ -19,6 +19,7 @@ PKG_MAINTAINER:=Oliver Kruecken <okruecken@pdfmodel.org>
 GO_PKG:=github.com/OliverKruecken/waverms-agent
 GO_PKG_BUILD_PKG:=$(GO_PKG)
 GO_PKG_LDFLAGS_X:=main.Version=$(PKG_VERSION)
+GO_PKG_LDFLAGS:=-s -w
 
 include $(INCLUDE_DIR)/package.mk
 $(call include_mk, golang-package.mk)
