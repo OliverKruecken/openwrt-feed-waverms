@@ -25,8 +25,8 @@ $(call include_mk, golang-package.mk)
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
 define Package/waverms-agent
-  SECTION:=utils
-  CATEGORY:=Utilities
+  SECTION:=admin
+  CATEGORY:=Administration
   TITLE:=WaveRMS Remote Management Agent
   URL:=https://github.com/OliverKruecken/waverms-agent
   DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle
