@@ -19,7 +19,12 @@ log() { logger -t waverms-dhcp "$*"; }
 
 [ "$1" = "bound" ] || [ "$1" = "renew" ] || exit 0
 
-log "action=$1 opt224=${opt224:-(none)} opt225=${opt225:-(none)} opt226=${opt226:-(none)}"
+# opt224 is the bootstrap token itself (hex-encoded) — never log its value,
+# only whether one was received, so it doesn't end up in logd / the live-logs
+# snapshot the backend and frontend can read.
+opt224_status="(none)"
+[ -n "$opt224" ] && opt224_status="present"
+log "action=$1 opt224=$opt224_status opt225=${opt225:-(none)} opt226=${opt226:-(none)}"
 
 # Decode a hex string to UTF-8 text (e.g. "6d717474" → "mqtt").
 # Uses sed + printf \x escapes — BusyBox awk lacks strtonum.
