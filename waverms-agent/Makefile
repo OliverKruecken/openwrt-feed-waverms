@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=waverms-agent
-PKG_VERSION:=1.9.2
+PKG_VERSION:=1.9.3
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/OliverKruecken/waverms-agent/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=14b7ae57b74ca0aad7fb0098b480fd9de9f627025968b2556447ecdd742bc8bc
+PKG_HASH:=b82d6a367988e8b76d6ad255b0ee62c54e4d218d685df21d294918d40566c116
 
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
