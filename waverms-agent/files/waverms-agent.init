@@ -21,10 +21,10 @@ start_service() {
     procd_close_instance
 }
 
-reload_service() {
-    restart
-}
-
-service_triggers() {
-    procd_add_reload_trigger "network"
-}
+# No service_triggers()/reload_service(): a prior "restart on network reload" trigger here
+# self-inflicted a restart on the agent's OWN config_apply committing the "network" package
+# (uci commit fires the reload notification immediately, independent of whether
+# /etc/init.d/network reload ever runs) — killing the connectivity watchdog goroutine before it
+# could ack, so every config_apply touching network config timed out on the backend even though
+# the config applied correctly on the device. Nothing else in this codebase depends on the agent
+# restarting when network config reloads.
