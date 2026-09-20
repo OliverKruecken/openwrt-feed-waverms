@@ -20,7 +20,7 @@ log() { logger -t waverms-dhcp "$*"; }
 [ "$1" = "bound" ] || [ "$1" = "renew" ] || exit 0
 
 # opt224 is the bootstrap token itself (hex-encoded) — never log its value,
-# only whether one was received, so it doesn't end up in logd / the live-logs
+# only whether one was received, so it doesn't end up in logd / the log
 # snapshot the backend and frontend can read.
 opt224_status="(none)"
 [ -n "$opt224" ] && opt224_status="present"
