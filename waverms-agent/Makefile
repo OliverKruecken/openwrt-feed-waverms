@@ -1,12 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=waverms-agent
-PKG_VERSION:=1.16.1
+PKG_VERSION:=1.16.2
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://codeload.github.com/OliverKruecken/waverms-agent/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=6d9126f7eb58744fae172b5404af08f4c70d4671043ba3349a51d2b50e8e337b
+PKG_HASH:=cfad2968fde09f7510177042f4cde52caa7e5aed95b5cff19d9987909ace0440
 
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
@@ -30,7 +30,7 @@ define Package/waverms-agent
   CATEGORY:=Administration
   TITLE:=WaveRMS Remote Management Agent
   URL:=https://github.com/OliverKruecken/waverms-agent
-  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle
+  DEPENDS:=$(GO_ARCH_DEPENDS) +ca-bundle +rpcd +rpcd-mod-file
 endef
 
 define Package/waverms-agent/description
