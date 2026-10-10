@@ -17,8 +17,8 @@
 # ASSUMPTIONS TO VERIFY (SDK tooling differs between releases):
 #   - ARCH uses the openwrt/gh-action-sdk format "<pkgarch>-<release>" (see its README for the
 #     tags that exist; apk-based releases are 25.12+ / snapshot, "main" below = snapshot).
-#   - How the action consumes KEY_BUILD for apk signing; the "Verify output" step fails loudly
-#     if no signed packages.adb is produced so a mismatch shows up on the first run.
+#   - gh-action-sdk signs the apks with PRIVATE_KEY and writes a signed packages.adb when
+#     INDEX=1; "Verify output" fails loudly if packages.adb is missing.
 
 name: Build apk repository
 
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.arch }}
+    name: ${{ matrix.release }} / ${{ matrix.arch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -67,18 +67,23 @@ jobs:
           ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
           FEEDNAME: waverms
           PACKAGES: waverms-agent
-          KEY_BUILD: ${{ secrets.APK_SIGNING_KEY }}
+          PRIVATE_KEY: ${{ secrets.APK_SIGNING_KEY }}
+          INDEX: "1"
           NO_REFRESH_CHECK: "true"
           V: s
 
-      - name: Verify output
+      - name: Locate built packages
         run: |
           dir=$(find bin/packages -type d -path "*/${{ matrix.arch }}/waverms" | head -n1)
           test -n "$dir" || { echo "no output dir for ${{ matrix.arch }}"; find bin -maxdepth 4; exit 1; }
           ls -l "$dir"
           ls "$dir"/waverms-agent-*.apk
-          test -f "$dir/packages.adb" || { echo "packages.adb missing (index/signing not produced)"; exit 1; }
-          echo "PKGDIR=$dir" >> "$GITHUB_ENV"
+          echo "PKGDIR=$PWD/$dir" >> "$GITHUB_ENV"
+
+      - name: Verify output
+        run: |
+          ls -l "$PKGDIR"
+          test -f "$PKGDIR/packages.adb" || { echo "packages.adb missing"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
