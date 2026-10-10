@@ -1,0 +1,125 @@
+# Builds and publishes a signed apk repository for waverms-agent (see docs/agent-go.md in the WaveRMS repo).
+#
+# Builds waverms-agent with the official OpenWrt SDK for each (release, package arch) in the
+# matrix, signs the apks, and publishes one static apk repository to GitHub Pages:
+#
+#   https://<owner>.github.io/<repo>/waverms.pem                     (public signing key)
+#   https://<owner>.github.io/<repo>/<release>/<pkgarch>/packages.adb (+ *.apk)
+#
+# One-time setup:
+#   1. Generate the key pair:
+#        openssl ecparam -genkey -name prime256v1 -out waverms-private.pem
+#        openssl ec -in waverms-private.pem -pubout -out waverms.pem
+#      Commit waverms.pem (public) to the repo root; store waverms-private.pem as the
+#      repository secret APK_SIGNING_KEY. Never commit the private key.
+#   2. Settings -> Pages -> Source: "GitHub Actions".
+#
+# ASSUMPTIONS TO VERIFY (SDK tooling differs between releases):
+#   - ARCH uses the openwrt/gh-action-sdk format "<pkgarch>-<release>" (see its README for the
+#     tags that exist; apk-based releases are 25.12+ / snapshot, "main" below = snapshot).
+#   - How the action consumes KEY_BUILD for apk signing; the "Verify output" step fails loudly
+#     if no signed packages.adb is produced so a mismatch shows up on the first run.
+
+name: Build apk repository
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # release = published path segment; sdk = gh-action-sdk release suffix
+        release: ["25.12", "snapshot"]
+        arch:
+          - x86_64
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a9_vfpv3-d16
+          - mips_24kc
+          - mipsel_24kc
+        include:
+          - release: "25.12"
+            sdk: openwrt-25.12
+          - release: snapshot
+            sdk: main
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build package
+        uses: openwrt/gh-action-sdk@main
+        env:
+          ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
+          FEEDNAME: waverms
+          PACKAGES: waverms-agent
+          KEY_BUILD: ${{ secrets.APK_SIGNING_KEY }}
+          NO_REFRESH_CHECK: "true"
+          V: s
+
+      - name: Verify output
+        run: |
+          dir=$(find bin/packages -type d -path "*/${{ matrix.arch }}/waverms" | head -n1)
+          test -n "$dir" || { echo "no output dir for ${{ matrix.arch }}"; find bin -maxdepth 4; exit 1; }
+          ls -l "$dir"
+          ls "$dir"/waverms-agent-*.apk
+          test -f "$dir/packages.adb" || { echo "packages.adb missing (index/signing not produced)"; exit 1; }
+          echo "PKGDIR=$dir" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repo-${{ matrix.release }}-${{ matrix.arch }}
+          path: ${{ env.PKGDIR }}/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: repo-*
+          path: artifacts
+
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp waverms.pem site/
+          for d in artifacts/repo-*; do
+            name=${d#artifacts/repo-}      # <release>-<arch>
+            release=${name%%-*}
+            arch=${name#*-}
+            mkdir -p "site/$release/$arch"
+            cp "$d"/* "site/$release/$arch/"
+          done
+          find site -maxdepth 3 | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
