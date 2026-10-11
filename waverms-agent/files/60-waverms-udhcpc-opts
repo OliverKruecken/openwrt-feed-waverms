@@ -9,6 +9,10 @@
 # netifd reads 'reqopts' as space-separated option numbers and passes
 # each as a -O flag to udhcpc — do not include -O here.
 
+# No "wan" section (differently named WAN, or none): "uci set" would fail with
+# "uci: Invalid argument", leaving this script in place to fail on every boot.
+uci -q get network.wan >/dev/null || exit 0
+
 EXISTING=$(uci -q get network.wan.reqopts)
 case "$EXISTING" in
     *224*) ;;  # already configured, nothing to do
